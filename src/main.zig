@@ -14,6 +14,7 @@ const commands = securemilter.milter.commands;
 const codec = securemilter.milter.codec;
 const responses = securemilter.milter.responses;
 const negotiate = securemilter.milter.negotiate;
+const zmq = securemilter.zmq;
 
 const spf = @import("spf.zig");
 const macro = @import("macro.zig");
@@ -33,12 +34,26 @@ pub const SpfConfig = struct {
     dns_timeout_ms: u32,
     dns_retries: u8,
     whitelist_file: ?[]const u8,
+    zmq_endpoint: ?[]const u8,
+    zmq_topic: []const u8,
 };
 
 // Module-level config set before worker spawn, read-only during runtime.
 var g_authserv_id: []const u8 = "localhost";
 var g_dns_config: dns_mod.ResolverConfig = .{};
 var g_whitelist: whitelist.Whitelist = .{};
+var g_zmq_endpoint: ?[]const u8 = null;
+var g_zmq_topic: []const u8 = "spf.result";
+
+// Thread-local ZMQ publisher (one socket per worker thread — ZMQ thread-safety)
+threadlocal var tl_publisher: ?zmq.Publisher = null;
+
+fn getPublisher() *zmq.Publisher {
+    if (tl_publisher == null) {
+        tl_publisher = zmq.Publisher.init(g_zmq_endpoint, g_zmq_topic);
+    }
+    return &tl_publisher.?;
+}
 
 /// Parse the SecureSPF config from a loaded Config.
 pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfConfig {
@@ -75,6 +90,10 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     // Whitelist
     const wl_file = global.get("WhitelistFile");
 
+    // ZMQ event publishing
+    const zmq_endpoint = global.get("ZmqEndpoint");
+    const zmq_topic = global.getOrDefault("ZmqTopic", "spf.result");
+
     return .{
         .authserv_id = authserv_id,
         .listen_addresses = try addrs.toOwnedSlice(allocator),
@@ -85,6 +104,8 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .dns_timeout_ms = dns_timeout,
         .dns_retries = dns_retries,
         .whitelist_file = wl_file,
+        .zmq_endpoint = zmq_endpoint,
+        .zmq_topic = zmq_topic,
     };
 }
 
@@ -116,6 +137,8 @@ pub fn main() !void {
         .timeout_ms = spf_cfg.dns_timeout_ms,
         .retries = spf_cfg.dns_retries,
     };
+    g_zmq_endpoint = spf_cfg.zmq_endpoint;
+    g_zmq_topic = spf_cfg.zmq_topic;
 
     // Load whitelist if configured
     if (spf_cfg.whitelist_file) |wl_path| {
@@ -215,6 +238,9 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     const result_str = resultToString(result.result);
     const domain = if (result.domain.len > 0) result.domain else extractDomain(mail_from);
 
+    // Publish ZMQ event (fire-and-forget, non-blocking)
+    publishEvent(conn.allocator, client_addr, helo, mail_from, result_str, domain);
+
     return addArHeader(conn, result_str, null, domain, helo);
 }
 
@@ -255,6 +281,22 @@ fn addArHeader(
 
     codec.writePacket(conn.fd, hdr_payload) catch {};
     return @intFromEnum(responses.Code.accept);
+}
+
+fn publishEvent(
+    allocator: Allocator,
+    client_ip: []const u8,
+    helo: []const u8,
+    mail_from: []const u8,
+    result_str: []const u8,
+    domain: []const u8,
+) void {
+    const json = std.fmt.allocPrint(allocator,
+        \\{{"client_ip":"{s}","helo":"{s}","mail_from":"{s}","result":"{s}","domain":"{s}"}}
+    , .{ client_ip, helo, mail_from, result_str, domain }) catch return;
+    defer allocator.free(json);
+
+    getPublisher().publish(json);
 }
 
 fn resultToString(result: spf.Result) []const u8 {
