@@ -1,0 +1,33 @@
+# SecureSPF Configuration
+# See securespf(8) for details.
+
+[global]
+# Identifier used in Authentication-Results headers.
+AuthservID      = mail.example.com
+
+# Number of worker threads. 0 = auto-detect CPU count.
+WorkerThreads   = 0
+
+# Syslog logging.
+Syslog          = yes
+SyslogFacility  = mail
+
+# PID file location.
+PidFile         = /var/run/securespf/securespf.pid
+
+# Drop privileges to this user after binding sockets.
+User            = _spf
+
+# DNS resolver settings.
+DnsTimeout      = 5
+DnsRetries      = 2
+
+# ZMQ event publishing endpoint (optional).
+# If not set, events are silently dropped.
+# ZmqEndpoint   = tcp://events.internal:5555
+
+[listener:inbound]
+Socket          = inet:8890@0.0.0.0
+
+# Optional: hosts/networks that bypass SPF checking.
+# WhitelistFile = /usr/local/etc/securespf/whitelist

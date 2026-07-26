@@ -1,0 +1,19 @@
+.{
+    .name = .securespf,
+    .version = "0.1.0",
+    .fingerprint = 0x42e5067db2bb3d2,
+    .minimum_zig_version = "0.15.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "config",
+        "LICENSE",
+        "README.md",
+    },
+    .dependencies = .{
+        .securemilter = .{
+            .path = "../securemilter-lib",
+        },
+    },
+}
