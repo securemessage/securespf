@@ -188,8 +188,11 @@ fn onMailFrom(conn: *connection_mod.Connection, _: []const u8) u8 {
 
 fn onEom(conn: *connection_mod.Connection) u8 {
     const client_addr = conn.macros.client_addr orelse "unknown";
-    const mail_from = conn.mail_from_raw orelse "<>";
+    const mail_from_raw = conn.mail_from_raw orelse "<>";
     const helo = conn.helo_name orelse "unknown";
+
+    // Strip angle brackets from MAIL FROM (Postfix sends "<user@domain>")
+    const mail_from = stripAngleBrackets(mail_from_raw);
 
     // Check whitelist — skip SPF for trusted hosts
     if (g_whitelist.contains(client_addr)) {
@@ -213,6 +216,14 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     const domain = if (result.domain.len > 0) result.domain else extractDomain(mail_from);
 
     return addArHeader(conn, result_str, null, domain, helo);
+}
+
+/// Strip leading '<' and trailing '>' from an address.
+fn stripAngleBrackets(addr: []const u8) []const u8 {
+    var s = addr;
+    if (s.len > 0 and s[0] == '<') s = s[1..];
+    if (s.len > 0 and s[s.len - 1] == '>') s = s[0 .. s.len - 1];
+    return s;
 }
 
 fn addArHeader(
@@ -287,4 +298,11 @@ test "extract domain from mail from" {
     try std.testing.expectEqualStrings("example.com", extractDomain("user@example.com"));
     try std.testing.expectEqualStrings("", extractDomain("<>"));
     try std.testing.expectEqualStrings("postmaster", extractDomain("postmaster"));
+}
+
+test "strip angle brackets" {
+    try std.testing.expectEqualStrings("user@example.com", stripAngleBrackets("<user@example.com>"));
+    try std.testing.expectEqualStrings("user@example.com", stripAngleBrackets("user@example.com"));
+    try std.testing.expectEqualStrings("", stripAngleBrackets("<>"));
+    try std.testing.expectEqualStrings("", stripAngleBrackets(""));
 }
