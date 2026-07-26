@@ -39,12 +39,20 @@ pub const SpfConfig = struct {
     zmq_topic: []const u8,
 };
 
+const reload_mod = securemilter.reload;
+
 // Module-level config set before worker spawn, read-only during runtime.
 var g_authserv_id: []const u8 = "localhost";
 var g_dns_config: dns_mod.ResolverConfig = .{};
 var g_whitelist: whitelist.Whitelist = .{};
 var g_zmq_endpoint: ?[]const u8 = null;
 var g_zmq_topic: []const u8 = "spf.result";
+var g_whitelist_file: ?[]const u8 = null;
+var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
+var g_allocator: Allocator = undefined;
+
+// Global config generation counter — incremented on SIGHUP reload.
+var g_config_gen: reload_mod.ConfigGeneration = reload_mod.ConfigGeneration.init();
 
 // Thread-local ZMQ publisher (one socket per worker thread — ZMQ thread-safety)
 threadlocal var tl_publisher: ?zmq.Publisher = null;
@@ -116,11 +124,13 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    g_allocator = allocator;
 
     // Parse command-line for config file path
     var args = std.process.args();
     _ = args.next(); // skip argv[0]
     const config_path = args.next() orelse "/usr/local/etc/securespf/securespf.conf";
+    g_config_path = config_path;
 
     // Load config
     var cfg = config_mod.parseFile(allocator, config_path) catch |err| {
@@ -144,6 +154,7 @@ pub fn main() !void {
     g_zmq_topic = spf_cfg.zmq_topic;
 
     // Load whitelist if configured
+    g_whitelist_file = spf_cfg.whitelist_file;
     if (spf_cfg.whitelist_file) |wl_path| {
         if (whitelist.Whitelist.loadFile(allocator, wl_path)) |wl| {
             g_whitelist = wl;
@@ -185,6 +196,7 @@ pub fn main() !void {
         .on_helo = onHelo,
         .on_mail_from = onMailFrom,
         .on_eom = onEom,
+        .on_reload = onWorkerReload,
         .required_actions = .{ .add_headers = true },
         .skip_flags = .{ .no_body = true }, // SPF doesn't need message body
     };
@@ -193,21 +205,22 @@ pub fn main() !void {
     const shutdown_pipe = try posix.pipe();
     defer posix.close(shutdown_pipe[0]);
 
-    // Block signals before spawning workers so SIGTERM/SIGINT are
+    // Block signals before spawning workers so SIGTERM/SIGINT/SIGHUP are
     // delivered only via sigwait in the main thread.
     daemon_mod.ManagedSignals.blockForKqueue();
 
-    var threads = try worker_mod.spawnPool(
+    var threads = try worker_mod.spawnPoolWithReload(
         allocator,
         spf_cfg.worker_threads,
         spf_cfg.listen_addresses,
         callbacks,
         shutdown_pipe[0],
+        &g_config_gen,
     );
     defer threads.deinit(allocator);
 
-    // Main thread: wait for shutdown signal, write to pipe, join workers
-    daemon_mod.ManagedSignals.waitForShutdown(shutdown_pipe[1]);
+    // Main thread: signal loop handles SIGHUP (reload) and SIGTERM (shutdown)
+    daemon_mod.ManagedSignals.signalLoop(shutdown_pipe[1], reloadConfig);
     for (threads.items) |t| t.join();
 }
 
@@ -343,6 +356,43 @@ fn extractDomain(mail_from: []const u8) []const u8 {
         return addr[at + 1 ..];
     }
     return addr;
+}
+
+// =============================================================================
+// Reload
+// =============================================================================
+
+/// Main-thread reload callback: re-reads whitelist file and increments
+/// the config generation counter. Workers will pick up the new generation
+/// on their next event loop iteration and call onWorkerReload().
+fn reloadConfig() void {
+    // Re-read whitelist (the primary reloadable state for SecureSPF)
+    if (g_whitelist_file) |wl_path| {
+        if (whitelist.Whitelist.loadFile(g_allocator, wl_path)) |new_wl| {
+            // Free old entries if they were heap-allocated
+            if (g_whitelist.allocator) |old_alloc| {
+                old_alloc.free(g_whitelist.entries);
+            }
+            g_whitelist = new_wl;
+            std.log.info("whitelist reloaded from {s}", .{wl_path});
+        } else |_| {
+            std.log.warn("reload: failed to re-read whitelist {s}, keeping previous", .{wl_path});
+        }
+    }
+
+    // Signal workers that config has changed
+    g_config_gen.increment();
+    std.log.info("config generation advanced to {d}", .{g_config_gen.load()});
+}
+
+/// Per-worker reload callback: called when this worker detects the
+/// global config generation has advanced. For SecureSPF, workers have
+/// no local caches to flush (whitelist is a module global read directly),
+/// so this is a no-op placeholder for the interface contract.
+fn onWorkerReload() void {
+    // SecureSPF workers read g_whitelist directly (module global).
+    // No per-worker LRU cache to flush. Log for observability.
+    std.log.debug("worker: config reload acknowledged", .{});
 }
 
 // =============================================================================
