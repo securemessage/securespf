@@ -18,7 +18,11 @@ PidFile         = /var/run/securespf/securespf.pid
 # Drop privileges to this user after binding sockets.
 User            = _spf
 
+# Run in foreground (do not daemonize). Useful for debugging.
+# Foreground    = no
+
 # DNS resolver settings.
+DnsNameserver   = 127.0.0.1
 DnsTimeout      = 5
 DnsRetries      = 2
 
