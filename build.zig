@@ -24,6 +24,21 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // securespf-check CLI tool (SPF evaluation from command line)
+    const check_mod = b.createModule(.{
+        .root_source_file = b.path("src/check.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "securemilter", .module = securemilter_mod },
+        },
+    });
+    const check_exe = b.addExecutable(.{
+        .name = "securespf-check",
+        .root_module = check_mod,
+    });
+    b.installArtifact(check_exe);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
