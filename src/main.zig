@@ -19,6 +19,9 @@ const spf = @import("spf.zig");
 const macro = @import("macro.zig");
 const evaluate = @import("evaluate.zig");
 
+const whitelist = @import("whitelist.zig");
+const dns_mod = securemilter.dns;
+
 /// SecureSPF runtime configuration parsed from INI config.
 pub const SpfConfig = struct {
     authserv_id: []const u8,
@@ -26,7 +29,16 @@ pub const SpfConfig = struct {
     worker_threads: u32,
     pid_file: []const u8,
     foreground: bool,
+    dns_nameserver: []const u8,
+    dns_timeout_ms: u32,
+    dns_retries: u8,
+    whitelist_file: ?[]const u8,
 };
+
+// Module-level config set before worker spawn, read-only during runtime.
+var g_authserv_id: []const u8 = "localhost";
+var g_dns_config: dns_mod.ResolverConfig = .{};
+var g_whitelist: whitelist.Whitelist = .{};
 
 /// Parse the SecureSPF config from a loaded Config.
 pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfConfig {
@@ -55,12 +67,24 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         try addrs.append(allocator, .{ .tcp = .{ .host = "0.0.0.0", .port = 8890 } });
     }
 
+    // DNS config
+    const dns_ns = global.getOrDefault("DnsNameserver", "127.0.0.1");
+    const dns_timeout = global.getInt("DnsTimeout", u32, 5) * 1000; // config is seconds, we need ms
+    const dns_retries = global.getInt("DnsRetries", u8, 2);
+
+    // Whitelist
+    const wl_file = global.get("WhitelistFile");
+
     return .{
         .authserv_id = authserv_id,
         .listen_addresses = try addrs.toOwnedSlice(allocator),
         .worker_threads = workers,
         .pid_file = pid_file,
         .foreground = foreground_val,
+        .dns_nameserver = dns_ns,
+        .dns_timeout_ms = dns_timeout,
+        .dns_retries = dns_retries,
+        .whitelist_file = wl_file,
     };
 }
 
@@ -83,6 +107,24 @@ pub fn main() !void {
 
     const spf_cfg = try parseSpfConfig(allocator, &cfg);
     defer allocator.free(spf_cfg.listen_addresses);
+
+    // Initialize module-level globals (read-only after this point)
+    g_authserv_id = spf_cfg.authserv_id;
+    g_dns_config = .{
+        .nameserver = spf_cfg.dns_nameserver,
+        .port = 53,
+        .timeout_ms = spf_cfg.dns_timeout_ms,
+        .retries = spf_cfg.dns_retries,
+    };
+
+    // Load whitelist if configured
+    if (spf_cfg.whitelist_file) |wl_path| {
+        if (whitelist.Whitelist.loadFile(allocator, wl_path)) |wl| {
+            g_whitelist = wl;
+        } else |_| {
+            std.log.warn("failed to load whitelist: {s}", .{wl_path});
+        }
+    }
 
     // Daemonize unless foreground mode
     if (!spf_cfg.foreground) {
@@ -141,40 +183,58 @@ fn onHelo(conn: *connection_mod.Connection, _: []const u8) u8 {
 
 fn onMailFrom(conn: *connection_mod.Connection, _: []const u8) u8 {
     _ = conn;
-    // SPF evaluation will happen here once the evaluation engine is wired
     return @intFromEnum(responses.Code.@"continue");
 }
 
 fn onEom(conn: *connection_mod.Connection) u8 {
-    // Build Authentication-Results header with SPF result
-    // For now, use the data captured during the connection
     const client_addr = conn.macros.client_addr orelse "unknown";
     const mail_from = conn.mail_from_raw orelse "<>";
     const helo = conn.helo_name orelse "unknown";
 
-    // Extract domain from MAIL FROM
-    const domain = extractDomain(mail_from);
+    // Check whitelist — skip SPF for trusted hosts
+    if (g_whitelist.contains(client_addr)) {
+        return addArHeader(conn, "pass", "client is whitelisted", extractDomain(mail_from), helo);
+    }
 
-    // TODO: actual SPF evaluation via DNS — for now return "none"
-    const result_str = "none";
-    const reason = "SPF evaluation not yet implemented";
-    _ = helo;
+    // Perform SPF evaluation
+    var resolver = dns_mod.Resolver.init(conn.allocator, g_dns_config);
+    defer resolver.deinit();
 
-    // Build the A-R header value
-    const ar_value = auth_results.build(conn.allocator, "localhost", &.{
+    const eval_ctx = evaluate.EvalContext{
+        .client_ip = client_addr,
+        .is_ipv6 = mem.indexOfScalar(u8, client_addr, ':') != null,
+        .sender = mail_from,
+        .helo_domain = helo,
+        .receiver_host = g_authserv_id,
+    };
+
+    const result = evaluate.evaluate(conn.allocator, &resolver, &eval_ctx);
+    const result_str = resultToString(result.result);
+    const domain = if (result.domain.len > 0) result.domain else extractDomain(mail_from);
+
+    return addArHeader(conn, result_str, null, domain, helo);
+}
+
+fn addArHeader(
+    conn: *connection_mod.Connection,
+    result_str: []const u8,
+    reason: ?[]const u8,
+    domain: []const u8,
+    helo: []const u8,
+) u8 {
+    const ar_value = auth_results.build(conn.allocator, g_authserv_id, &.{
         .{
             .method = "spf",
             .result = result_str,
             .reason = reason,
             .properties = &.{
                 .{ .ptype = "smtp", .property = "mailfrom", .value = domain },
-                .{ .ptype = "smtp", .property = "helo", .value = conn.helo_name orelse "unknown" },
+                .{ .ptype = "smtp", .property = "helo", .value = helo },
             },
         },
     }) catch return @intFromEnum(responses.Code.@"continue");
     defer conn.allocator.free(ar_value);
 
-    // Send SMFIR_ADDHEADER to prepend Authentication-Results
     const hdr_payload = responses.addHeader(
         conn.allocator,
         "Authentication-Results",
@@ -183,10 +243,19 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     defer conn.allocator.free(hdr_payload);
 
     codec.writePacket(conn.fd, hdr_payload) catch {};
-
-    // After adding headers, respond with accept
-    _ = client_addr;
     return @intFromEnum(responses.Code.accept);
+}
+
+fn resultToString(result: spf.Result) []const u8 {
+    return switch (result) {
+        .none => "none",
+        .neutral => "neutral",
+        .pass => "pass",
+        .fail => "fail",
+        .softfail => "softfail",
+        .temperror => "temperror",
+        .permerror => "permerror",
+    };
 }
 
 /// Extract domain from a MAIL FROM address (strip angle brackets and local-part).
@@ -210,6 +279,7 @@ test {
     _ = spf;
     _ = macro;
     _ = evaluate;
+    _ = whitelist;
 }
 
 test "extract domain from mail from" {
