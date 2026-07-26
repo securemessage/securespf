@@ -189,15 +189,26 @@ pub fn main() !void {
         .skip_flags = .{ .no_body = true }, // SPF doesn't need message body
     };
 
+    // Create shutdown pipe: write-end wakes all workers from kevent()
+    const shutdown_pipe = try posix.pipe();
+    defer posix.close(shutdown_pipe[0]);
+    defer posix.close(shutdown_pipe[1]);
+
+    // Block signals before spawning workers so SIGTERM/SIGINT are
+    // delivered only via sigwait in the main thread.
+    daemon_mod.ManagedSignals.blockForKqueue();
+
     var threads = try worker_mod.spawnPool(
         allocator,
         spf_cfg.worker_threads,
         spf_cfg.listen_addresses,
         callbacks,
+        shutdown_pipe[0],
     );
     defer threads.deinit(allocator);
 
-    // Main thread: wait for threads (in production, handle signals here)
+    // Main thread: wait for shutdown signal, write to pipe, join workers
+    daemon_mod.ManagedSignals.waitForShutdown(shutdown_pipe[1]);
     for (threads.items) |t| t.join();
 }
 
