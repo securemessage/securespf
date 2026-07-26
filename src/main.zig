@@ -192,7 +192,6 @@ pub fn main() !void {
     // Create shutdown pipe: write-end wakes all workers from kevent()
     const shutdown_pipe = try posix.pipe();
     defer posix.close(shutdown_pipe[0]);
-    defer posix.close(shutdown_pipe[1]);
 
     // Block signals before spawning workers so SIGTERM/SIGINT are
     // delivered only via sigwait in the main thread.
