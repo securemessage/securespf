@@ -32,7 +32,7 @@ pub const SpfConfig = struct {
     pid_file: []const u8,
     foreground: bool,
     user: ?[]const u8,
-    dns_nameserver: []const u8,
+    dns_nameservers: []const []const u8,
     dns_timeout_ms: u32,
     dns_retries: u8,
     whitelist_file: ?[]const u8,
@@ -96,8 +96,15 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     // Connection limits
     const max_connections = global.getInt("MaxConnections", u32, worker_mod.DEFAULT_MAX_CONNECTIONS);
 
-    // DNS config
-    const dns_ns = global.getOrDefault("DnsNameserver", "127.0.0.1");
+    // DNS config — supports comma-separated list: DnsNameserver = 10.0.0.1, 8.8.8.8
+    const dns_ns_raw = global.getOrDefault("DnsNameserver", "127.0.0.1");
+    var ns_list: std.ArrayListUnmanaged([]const u8) = .{};
+    var ns_iter = mem.splitSequence(u8, dns_ns_raw, ",");
+    while (ns_iter.next()) |part| {
+        const trimmed = mem.trim(u8, part, " \t");
+        if (trimmed.len > 0) try ns_list.append(allocator, trimmed);
+    }
+    const dns_nameservers = try ns_list.toOwnedSlice(allocator);
     const dns_timeout = global.getInt("DnsTimeout", u32, 5) * 1000; // config is seconds, we need ms
     const dns_retries = global.getInt("DnsRetries", u8, 2);
 
@@ -116,13 +123,18 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .pid_file = pid_file,
         .foreground = foreground_val,
         .user = user,
-        .dns_nameserver = dns_ns,
+        .dns_nameservers = dns_nameservers,
         .dns_timeout_ms = dns_timeout,
         .dns_retries = dns_retries,
         .whitelist_file = wl_file,
         .zmq_endpoint = zmq_endpoint,
         .zmq_topic = zmq_topic,
     };
+}
+
+fn usageError() error{InvalidArgument} {
+    std.log.err("usage: securespf -c <config-file>", .{});
+    return error.InvalidArgument;
 }
 
 pub fn main() !void {
@@ -134,20 +146,9 @@ pub fn main() !void {
     // Parse command-line: securespf -c /path/to/config
     var args = std.process.args();
     _ = args.next(); // skip argv[0]
-    const config_path = blk: {
-        const flag = args.next() orelse {
-            std.log.err("usage: securespf -c <config-file>", .{});
-            return error.InvalidArgument;
-        };
-        if (!std.mem.eql(u8, flag, "-c")) {
-            std.log.err("usage: securespf -c <config-file>", .{});
-            return error.InvalidArgument;
-        }
-        break :blk args.next() orelse {
-            std.log.err("usage: securespf -c <config-file>", .{});
-            return error.InvalidArgument;
-        };
-    };
+    const flag = args.next() orelse return usageError();
+    if (!std.mem.eql(u8, flag, "-c")) return usageError();
+    const config_path = args.next() orelse return usageError();
     g_config_path = config_path;
 
     // Load config
@@ -163,7 +164,7 @@ pub fn main() !void {
     // Initialize module-level globals (read-only after this point)
     g_authserv_id = spf_cfg.authserv_id;
     g_dns_config = .{
-        .nameserver = spf_cfg.dns_nameserver,
+        .nameservers = spf_cfg.dns_nameservers,
         .port = 53,
         .timeout_ms = spf_cfg.dns_timeout_ms,
         .retries = spf_cfg.dns_retries,

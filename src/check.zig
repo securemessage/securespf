@@ -75,8 +75,9 @@ pub fn main() !void {
     const is_ipv6 = mem.indexOfScalar(u8, ip, ':') != null;
 
     // Set up DNS resolver
+    const ns_slice: []const []const u8 = &.{nameserver};
     const dns_config = dns_mod.ResolverConfig{
-        .nameserver = nameserver,
+        .nameservers = ns_slice,
         .timeout_ms = 5000,
         .retries = 2,
     };
