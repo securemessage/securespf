@@ -299,15 +299,19 @@ fn onMailFrom(conn: *connection_mod.Connection, _: []const u8) u8 {
 }
 
 fn onEom(conn: *connection_mod.Connection) u8 {
+    const start_ns = std.time.nanoTimestamp();
     const client_addr = conn.macros.client_addr orelse "unknown";
     const mail_from_raw = conn.mail_from_raw orelse "<>";
     const helo = conn.helo_name orelse "unknown";
+    const queue_id = conn.macros.queue_id orelse "-";
 
     // Strip angle brackets from MAIL FROM (Postfix sends "<user@domain>")
     const mail_from = stripAngleBrackets(mail_from_raw);
 
     // Check whitelist — skip SPF for trusted hosts
     if (g_whitelist.contains(client_addr)) {
+        const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
+        log.info("id={s} client={s} from={s} result=pass (whitelisted) elapsed={d}ms", .{ queue_id, client_addr, mail_from, elapsed_ms });
         return addArHeader(conn, "pass", "client is whitelisted", extractDomain(mail_from), helo);
     }
 
@@ -326,6 +330,9 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     const result = evaluate.evaluate(conn.allocator, &resolver, &eval_ctx);
     const result_str = resultToString(result.result);
     const domain = if (result.domain.len > 0) result.domain else extractDomain(mail_from);
+
+    const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
+    log.info("id={s} client={s} from={s} result={s} elapsed={d}ms", .{ queue_id, client_addr, mail_from, result_str, elapsed_ms });
 
     // Publish ZMQ event (fire-and-forget, non-blocking)
     publishEvent(conn.allocator, client_addr, helo, mail_from, result_str, domain);
