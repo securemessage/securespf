@@ -35,6 +35,8 @@ pub const SpfConfig = struct {
     dns_nameservers: []const []const u8,
     dns_timeout_ms: u32,
     dns_retries: u8,
+    dns_cache_size: u32,
+    dns_negative_ttl: u32,
     whitelist_file: ?[]const u8,
     zmq_endpoint: ?[]const u8,
     zmq_topic: []const u8,
@@ -108,6 +110,8 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     const dns_nameservers = try ns_list.toOwnedSlice(allocator);
     const dns_timeout = global.getInt("DnsTimeout", u32, 5) * 1000; // config is seconds, we need ms
     const dns_retries = global.getInt("DnsRetries", u8, 2);
+    const dns_cache_size = global.getInt("DnsCacheSize", u32, 1000);
+    const dns_negative_ttl = global.getInt("DnsNegativeTTL", u32, 60);
 
     // Whitelist
     const wl_file = global.get("WhitelistFile");
@@ -127,6 +131,8 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .dns_nameservers = dns_nameservers,
         .dns_timeout_ms = dns_timeout,
         .dns_retries = dns_retries,
+        .dns_cache_size = dns_cache_size,
+        .dns_negative_ttl = dns_negative_ttl,
         .whitelist_file = wl_file,
         .zmq_endpoint = zmq_endpoint,
         .zmq_topic = zmq_topic,
@@ -169,6 +175,8 @@ pub fn main() !void {
         .port = 53,
         .timeout_ms = spf_cfg.dns_timeout_ms,
         .retries = spf_cfg.dns_retries,
+        .cache_size = spf_cfg.dns_cache_size,
+        .negative_ttl = spf_cfg.dns_negative_ttl,
     };
 
     g_zmq_endpoint = spf_cfg.zmq_endpoint;
