@@ -28,6 +28,7 @@ pub const SpfConfig = struct {
     authserv_id: []const u8,
     listen_addresses: []const listener_mod.ListenAddress,
     worker_threads: u32,
+    max_connections: u32,
     pid_file: []const u8,
     foreground: bool,
     user: ?[]const u8,
@@ -92,6 +93,9 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         try addrs.append(allocator, .{ .tcp = .{ .host = "0.0.0.0", .port = 8890 } });
     }
 
+    // Connection limits
+    const max_connections = global.getInt("MaxConnections", u32, worker_mod.DEFAULT_MAX_CONNECTIONS);
+
     // DNS config
     const dns_ns = global.getOrDefault("DnsNameserver", "127.0.0.1");
     const dns_timeout = global.getInt("DnsTimeout", u32, 5) * 1000; // config is seconds, we need ms
@@ -108,6 +112,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .authserv_id = authserv_id,
         .listen_addresses = try addrs.toOwnedSlice(allocator),
         .worker_threads = workers,
+        .max_connections = max_connections,
         .pid_file = pid_file,
         .foreground = foreground_val,
         .user = user,
@@ -177,8 +182,10 @@ pub fn main() !void {
     };
     defer daemon_mod.removePidFile(spf_cfg.pid_file);
 
-    // Raise fd limit before dropping privileges (requires root)
-    daemon_mod.raiseFileLimit();
+    // Raise fd limit to calculated budget before dropping privileges
+    const num_workers = if (spf_cfg.worker_threads == 0) @as(u32, @intCast(std.Thread.getCpuCount() catch 4)) else spf_cfg.worker_threads;
+    const fd_need = daemon_mod.calculateFdNeed(num_workers, spf_cfg.max_connections, @intCast(spf_cfg.listen_addresses.len));
+    daemon_mod.raiseFileLimit(fd_need);
 
     // Drop privileges after PID file is written, before workers spawn
     if (spf_cfg.user) |user| {
@@ -219,6 +226,7 @@ pub fn main() !void {
         callbacks,
         shutdown_pipe[0],
         &g_config_gen,
+        spf_cfg.max_connections,
     );
     defer threads.deinit(allocator);
 
