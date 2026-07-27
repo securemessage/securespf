@@ -171,15 +171,6 @@ pub fn main() !void {
         .retries = spf_cfg.dns_retries,
     };
 
-    // Start proactive DNS health monitor
-    if (dns_mod.HealthMonitor.init(allocator, spf_cfg.dns_nameservers, 53, 5, 2000)) |monitor| {
-        monitor.start() catch |err| {
-            std.log.warn("DNS health monitor thread failed: {}", .{err});
-        };
-        g_health_monitor = monitor;
-    } else |err| {
-        std.log.warn("DNS health monitor init failed: {}, falling back to reactive", .{err});
-    }
     g_zmq_endpoint = spf_cfg.zmq_endpoint;
     g_zmq_topic = spf_cfg.zmq_topic;
 
@@ -194,11 +185,22 @@ pub fn main() !void {
     }
 
     // Daemonize unless foreground mode
+    // MUST happen before spawning any threads (fork only preserves the calling thread)
     if (!spf_cfg.foreground) {
         daemon_mod.daemonize() catch |err| {
             std.log.err("daemonize failed: {}", .{err});
             return err;
         };
+    }
+
+    // Start proactive DNS health monitor AFTER daemonize (threads don't survive fork)
+    if (dns_mod.HealthMonitor.init(allocator, spf_cfg.dns_nameservers, 53, 5, 2000)) |monitor| {
+        monitor.start() catch |err| {
+            std.log.warn("DNS health monitor thread failed: {}", .{err});
+        };
+        g_health_monitor = monitor;
+    } else |err| {
+        std.log.warn("DNS health monitor init failed: {}, falling back to reactive", .{err});
     }
 
     // Write PID file
