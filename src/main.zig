@@ -131,10 +131,23 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     g_allocator = allocator;
 
-    // Parse command-line for config file path
+    // Parse command-line: securespf -c /path/to/config
     var args = std.process.args();
     _ = args.next(); // skip argv[0]
-    const config_path = args.next() orelse "/usr/local/etc/securespf/securespf.conf";
+    const config_path = blk: {
+        const flag = args.next() orelse {
+            std.log.err("usage: securespf -c <config-file>", .{});
+            return error.InvalidArgument;
+        };
+        if (!std.mem.eql(u8, flag, "-c")) {
+            std.log.err("usage: securespf -c <config-file>", .{});
+            return error.InvalidArgument;
+        }
+        break :blk args.next() orelse {
+            std.log.err("usage: securespf -c <config-file>", .{});
+            return error.InvalidArgument;
+        };
+    };
     g_config_path = config_path;
 
     // Load config
