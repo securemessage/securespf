@@ -1,0 +1,82 @@
+.\" Copyright (c) 2026 Daniel Morante
+.\" SPDX-License-Identifier: BSD-2-Clause
+.Dd July 27, 2026
+.Dt SECURESPF-CHECK 8
+.Os
+.Sh NAME
+.Nm securespf-check
+.Nd command-line SPF evaluation tool
+.Sh SYNOPSIS
+.Nm
+.Fl i Ar ip-address
+.Fl s Ar sender
+.Op Fl e Ar helo-domain
+.Op Fl n Ar nameserver
+.Sh DESCRIPTION
+.Nm
+performs a one-shot SPF evaluation for the given client IP and sender address,
+printing the result to standard output.
+It uses the same SPF evaluation engine as
+.Xr securespf 8
+but runs as a standalone command without requiring a running milter.
+.Pp
+This is useful for testing SPF records, debugging delivery issues, and
+verifying DNS configuration.
+.Sh OPTIONS
+.Bl -tag -width indent
+.It Fl i Ar ip-address
+Client IP address (IPv4 or IPv6) to evaluate.
+Required.
+.It Fl s Ar sender
+MAIL FROM address (e.g.,
+.Dq user@example.com ) .
+Required.
+.It Fl e Ar helo-domain
+EHLO/HELO domain.
+If not specified, extracted from the sender address.
+.It Fl n Ar nameserver
+DNS nameserver IP address.
+Default:
+.Dq 127.0.0.1 .
+.It Fl h
+Display usage information.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width indent -compact
+.It 0
+SPF result is
+.Dq pass .
+.It 1
+SPF result is
+.Dq fail ,
+.Dq softfail ,
+.Dq neutral ,
+.Dq none ,
+.Dq temperror ,
+or
+.Dq permerror .
+.El
+.Sh EXAMPLES
+Check an IPv4 sender:
+.Bd -literal -offset indent
+securespf-check -i 192.168.1.233 -s user@bambania.com
+.Ed
+.Pp
+Check with explicit HELO and custom DNS:
+.Bd -literal -offset indent
+securespf-check -i 203.0.113.1 -s bounce@example.com -e mail.example.com -n 8.8.8.8
+.Ed
+.Pp
+Check an IPv6 sender:
+.Bd -literal -offset indent
+securespf-check -i 2001:db8::1 -s user@example.org
+.Ed
+.Sh SEE ALSO
+.Xr securespf 8
+.Sh STANDARDS
+.Rs
+.%T Sender Policy Framework (SPF) for Authorizing Use of Domains in Email
+.%R RFC 7208
+.Re
+.Sh AUTHORS
+.An Daniel Morante

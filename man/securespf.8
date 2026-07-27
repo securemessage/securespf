@@ -1,0 +1,162 @@
+.\" Copyright (c) 2026 Daniel Morante
+.\" SPDX-License-Identifier: BSD-2-Clause
+.Dd July 27, 2026
+.Dt SECURESPF 8
+.Os
+.Sh NAME
+.Nm securespf
+.Nd SPF verification milter for Postfix
+.Sh SYNOPSIS
+.Nm
+.Fl c Ar config-file
+.Sh DESCRIPTION
+.Nm
+is a high-performance Sender Policy Framework (SPF) verification milter
+implementing RFC 7208.
+It integrates with Postfix via the Sendmail milter protocol version 6,
+evaluates SPF records for incoming mail, and adds
+.Dq Authentication-Results
+headers with the SPF verdict.
+.Pp
+.Nm
+uses a thread-per-core architecture with kqueue I/O multiplexing.
+Each worker thread owns its own kqueue, connection pool, DNS resolver
+with TTL-based caching, and ZMQ publisher socket.
+.Sh OPTIONS
+.Bl -tag -width indent
+.It Fl c Ar config-file
+Path to the INI-style configuration file.
+Required.
+.El
+.Sh CONFIGURATION
+The configuration file uses INI format with a
+.Ql [global]
+section and one or more
+.Ql [listener:name]
+sections.
+.Ss Global Section
+.Bl -tag -width "SyslogFacility" -compact
+.It Cm AuthservID
+Identifier for Authentication-Results headers.
+Default:
+.Dq localhost .
+.It Cm WorkerThreads
+Number of worker threads.
+0 means auto-detect CPU count.
+Default: 0.
+.It Cm MaxConnections
+Maximum simultaneous connections per worker.
+Default: 256.
+.It Cm PidFile
+Path to the PID file.
+Default:
+.Pa /var/run/securespf/securespf.pid .
+.It Cm Foreground
+Run in foreground without daemonizing.
+Default: no.
+.It Cm User
+Drop privileges to this user after binding sockets.
+.It Cm Syslog
+Enable syslog output.
+Default: yes.
+.It Cm SyslogFacility
+Syslog facility.
+One of: mail, daemon, local0\(enlocal7.
+Default: mail.
+.It Cm LogLevel
+Logging verbosity.
+One of: err, warn, info, debug.
+Default: info.
+.It Cm DnsNameserver
+Comma-separated list of DNS nameserver IP addresses.
+Default:
+.Dq 127.0.0.1 .
+.It Cm DnsTimeout
+DNS query timeout in seconds.
+Default: 5.
+.It Cm DnsRetries
+Number of DNS query retries.
+Default: 2.
+.It Cm DnsCacheSize
+Maximum entries in the per-worker DNS cache.
+Default: 1000.
+.It Cm DnsNegativeTTL
+TTL in seconds for negative DNS cache entries (NXDOMAIN, SERVFAIL).
+Default: 60.
+.It Cm WhitelistFile
+Path to a file containing IP addresses (one per line) that bypass SPF checks.
+.It Cm ZmqEndpoint
+ZeroMQ PUB endpoint for event publishing (e.g.,
+.Dq tcp://events.internal:5555 ) .
+Disabled if not set.
+.It Cm ZmqTopic
+ZeroMQ topic prefix.
+Default:
+.Dq spf.result .
+.El
+.Ss Listener Sections
+Each
+.Ql [listener:name]
+section defines a socket to listen on.
+.Bl -tag -width "Socket" -compact
+.It Cm Socket
+Listen address.
+Format:
+.Dq inet:port@host
+for TCP or
+.Dq unix:/path/to/socket
+for Unix domain sockets.
+.El
+.Pp
+If no listener sections are defined, the default is
+.Dq inet:8890@0.0.0.0 .
+.Sh SIGNALS
+.Bl -tag -width "SIGTERM" -compact
+.It Dv SIGHUP
+Reload configuration file.
+Active connections are not interrupted.
+.It Dv SIGTERM
+Graceful shutdown.
+Stops accepting new connections and drains active ones (30 second timeout).
+.El
+.Sh POSTFIX INTEGRATION
+Add to
+.Pa main.cf :
+.Bd -literal -offset indent
+smtpd_milters = inet:127.0.0.1:8890
+milter_connect_macros = j {daemon_name} v {client_addr}
+milter_default_action = accept
+.Ed
+.Pp
+The
+.Cm {client_addr}
+macro is required for
+.Nm
+to see the SMTP client's IP address.
+.Sh LOG FORMAT
+Each processed message produces one info-level syslog line:
+.Bd -literal -offset indent
+securespf[pid]: id=QUEUEID peer=HOST[IP] client=IP from=ADDR result=VERDICT elapsed=Nms
+.Ed
+.Sh EXIT STATUS
+.Ex -std
+.Sh FILES
+.Bl -tag -width "/usr/local/etc/securespf/securespf.conf"
+.It Pa /usr/local/etc/securespf/securespf.conf
+Default configuration file location.
+.It Pa /var/run/securespf/securespf.pid
+Default PID file location.
+.El
+.Sh SEE ALSO
+.Xr securedkim 8 ,
+.Xr securedmarc 8 ,
+.Xr securearc 8 ,
+.Xr securespf-check 8 ,
+.Xr postconf 5
+.Sh STANDARDS
+.Rs
+.%T Sender Policy Framework (SPF) for Authorizing Use of Domains in Email
+.%R RFC 7208
+.Re
+.Sh AUTHORS
+.An Daniel Morante
