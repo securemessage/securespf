@@ -51,6 +51,7 @@ var g_zmq_topic: []const u8 = "spf.result";
 var g_whitelist_file: ?[]const u8 = null;
 var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
 var g_allocator: Allocator = undefined;
+var g_health_monitor: ?*dns_mod.HealthMonitor = null;
 
 // Global config generation counter — incremented on SIGHUP reload.
 var g_config_gen: reload_mod.ConfigGeneration = reload_mod.ConfigGeneration.init();
@@ -169,6 +170,16 @@ pub fn main() !void {
         .timeout_ms = spf_cfg.dns_timeout_ms,
         .retries = spf_cfg.dns_retries,
     };
+
+    // Start proactive DNS health monitor
+    if (dns_mod.HealthMonitor.init(allocator, spf_cfg.dns_nameservers, 53, 5, 2000)) |monitor| {
+        monitor.start() catch |err| {
+            std.log.warn("DNS health monitor thread failed: {}", .{err});
+        };
+        g_health_monitor = monitor;
+    } else |err| {
+        std.log.warn("DNS health monitor init failed: {}, falling back to reactive", .{err});
+    }
     g_zmq_endpoint = spf_cfg.zmq_endpoint;
     g_zmq_topic = spf_cfg.zmq_topic;
 
@@ -247,6 +258,7 @@ pub fn main() !void {
     // Main thread: signal loop handles SIGHUP (reload) and SIGTERM (shutdown)
     daemon_mod.ManagedSignals.signalLoop(shutdown_pipe[1], reloadConfig);
     for (threads.items) |t| t.join();
+    if (g_health_monitor) |monitor| monitor.deinit();
 }
 
 // =============================================================================
@@ -282,7 +294,7 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     }
 
     // Perform SPF evaluation
-    var resolver = dns_mod.Resolver.init(conn.allocator, g_dns_config);
+    var resolver = dns_mod.Resolver.initWithMonitor(conn.allocator, g_dns_config, g_health_monitor);
     defer resolver.deinit();
 
     const eval_ctx = evaluate.EvalContext{
