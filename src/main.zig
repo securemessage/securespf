@@ -15,6 +15,7 @@ const codec = securemilter.milter.codec;
 const responses = securemilter.milter.responses;
 const negotiate = securemilter.milter.negotiate;
 const zmq = securemilter.zmq;
+const log = securemilter.log;
 
 const spf = @import("spf.zig");
 const macro = @import("macro.zig");
@@ -140,7 +141,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
 }
 
 fn usageError() error{InvalidArgument} {
-    std.log.err("usage: securespf -c <config-file>", .{});
+    log.err("usage: securespf -c <config-file>", .{});
     return error.InvalidArgument;
 }
 
@@ -160,13 +161,18 @@ pub fn main() !void {
 
     // Load config
     var cfg = config_mod.parseFile(allocator, config_path) catch |err| {
-        std.log.err("failed to load config {s}: {}", .{ config_path, err });
+        log.err("failed to load config {s}: {}", .{ config_path, err });
         return err;
     };
     defer cfg.deinit();
 
     const spf_cfg = try parseSpfConfig(allocator, &cfg);
     defer allocator.free(spf_cfg.listen_addresses);
+
+    // Initialize logging from config (must be before any log calls below)
+    const log_cfg = if (cfg.global()) |g| log.LogConfig.fromSection(g, "securespf") else log.LogConfig.init(true, .mail, .info, "securespf");
+    log.initGlobal(&log_cfg);
+    log.initThread(); // main thread logger
 
     // Initialize module-level globals (read-only after this point)
     g_authserv_id = spf_cfg.authserv_id;
@@ -188,7 +194,7 @@ pub fn main() !void {
         if (whitelist.Whitelist.loadFile(allocator, wl_path)) |wl| {
             g_whitelist = wl;
         } else |_| {
-            std.log.warn("failed to load whitelist: {s}", .{wl_path});
+            log.warn("failed to load whitelist: {s}", .{wl_path});
         }
     }
 
@@ -196,24 +202,26 @@ pub fn main() !void {
     // MUST happen before spawning any threads (fork only preserves the calling thread)
     if (!spf_cfg.foreground) {
         daemon_mod.daemonize() catch |err| {
-            std.log.err("daemonize failed: {}", .{err});
+            log.err("daemonize failed: {}", .{err});
             return err;
         };
+        // Re-init logger after fork (PID changed)
+        log.initThread();
     }
 
     // Start proactive DNS health monitor AFTER daemonize (threads don't survive fork)
     if (dns_mod.HealthMonitor.init(allocator, spf_cfg.dns_nameservers, 53, 5, 2000)) |monitor| {
         monitor.start() catch |err| {
-            std.log.warn("DNS health monitor thread failed: {}", .{err});
+            log.warn("DNS health monitor thread failed: {}", .{err});
         };
         g_health_monitor = monitor;
     } else |err| {
-        std.log.warn("DNS health monitor init failed: {}, falling back to reactive", .{err});
+        log.warn("DNS health monitor init failed: {}, falling back to reactive", .{err});
     }
 
     // Write PID file
     daemon_mod.writePidFile(spf_cfg.pid_file) catch |err| {
-        std.log.err("pid file write failed: {}", .{err});
+        log.err("pid file write failed: {}", .{err});
     };
     defer daemon_mod.removePidFile(spf_cfg.pid_file);
 
@@ -225,12 +233,12 @@ pub fn main() !void {
     // Drop privileges after PID file is written, before workers spawn
     if (spf_cfg.user) |user| {
         daemon_mod.dropPrivileges(user) catch |err| {
-            std.log.err("privilege drop to '{s}' failed: {}", .{ user, err });
+            log.err("privilege drop to '{s}' failed: {}", .{ user, err });
             return err;
         };
     }
 
-    std.log.info("SecureSPF starting, AuthservID={s}, listeners={d}", .{
+    log.info("SecureSPF starting, AuthservID={s}, listeners={d}", .{
         spf_cfg.authserv_id,
         spf_cfg.listen_addresses.len,
     });
@@ -421,15 +429,15 @@ fn reloadConfig() void {
                 old_alloc.free(g_whitelist.entries);
             }
             g_whitelist = new_wl;
-            std.log.info("whitelist reloaded from {s}", .{wl_path});
+            log.info("whitelist reloaded from {s}", .{wl_path});
         } else |_| {
-            std.log.warn("reload: failed to re-read whitelist {s}, keeping previous", .{wl_path});
+            log.warn("reload: failed to re-read whitelist {s}, keeping previous", .{wl_path});
         }
     }
 
     // Signal workers that config has changed
     g_config_gen.increment();
-    std.log.info("config generation advanced to {d}", .{g_config_gen.load()});
+    log.info("config generation advanced to {d}", .{g_config_gen.load()});
 }
 
 /// Per-worker reload callback: called when this worker detects the
@@ -439,7 +447,7 @@ fn reloadConfig() void {
 fn onWorkerReload() void {
     // SecureSPF workers read g_whitelist directly (module global).
     // No per-worker LRU cache to flush. Log for observability.
-    std.log.debug("worker: config reload acknowledged", .{});
+    log.debug("worker: config reload acknowledged", .{});
 }
 
 // =============================================================================
