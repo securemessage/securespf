@@ -9,7 +9,7 @@ const listener_mod = securemilter.listener;
 const connection_mod = securemilter.connection;
 const worker_mod = securemilter.worker;
 const daemon_mod = securemilter.daemon;
-const auth_results = securemilter.auth_results;
+const auth_stamp = securemilter.auth_stamp;
 const commands = securemilter.milter.commands;
 const codec = securemilter.milter.codec;
 const responses = securemilter.milter.responses;
@@ -389,7 +389,9 @@ fn onEom(conn: *connection_mod.Connection) u8 {
         const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
         const peer = conn.getPeerDisplay();
         log.info("id={s} peer={s}[{s}] client={s} from={s} result=pass (whitelisted) elapsed={d}ms", .{ queue_id, peer.name, peer.ip, client_addr, mail_from, elapsed_ms });
-        return addArHeader(conn, "pass", "client is whitelisted", extractDomain(mail_from), helo);
+        addArHeader(conn, "pass", "client is whitelisted", extractDomain(mail_from), helo) catch |err|
+            return auth_stamp.deferCode(err, "spf");
+        return @intFromEnum(responses.Code.accept);
     }
 
     // Perform SPF evaluation
@@ -423,7 +425,9 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     // Publish ZMQ event (fire-and-forget, non-blocking)
     publishEvent(conn.allocator, client_addr, helo, mail_from, result_str, domain);
 
-    return addArHeader(conn, result_str, null, domain, helo);
+    addArHeader(conn, result_str, null, domain, helo) catch |err|
+        return auth_stamp.deferCode(err, "spf");
+    return @intFromEnum(responses.Code.accept);
 }
 
 /// Strip leading '<' and trailing '>' from an address.
@@ -434,14 +438,26 @@ fn stripAngleBrackets(addr: []const u8) []const u8 {
     return s;
 }
 
+/// Record the SPF result on the message.
+///
+/// Every failure here used to be swallowed -- two `catch return continue` and a
+/// `writePacket ... catch {}` followed unconditionally by `return accept`. The
+/// message was then delivered with **no `spf=` field** while this daemon
+/// reported success, and `securedmarc` went on to compute a DMARC verdict from
+/// the evidence that survived. A message that would have passed on an aligned
+/// SPF pass could be rejected under `p=reject` because this host could not
+/// allocate a header (audit X-9).
+///
+/// A local fault is not charged to the sender: if the result cannot be recorded,
+/// the message is deferred and the sender retries.
 fn addArHeader(
     conn: *connection_mod.Connection,
     result_str: []const u8,
     reason: ?[]const u8,
     domain: []const u8,
     helo: []const u8,
-) u8 {
-    const ar_value = auth_results.build(conn.allocator, g_authserv_id, &.{
+) !void {
+    try auth_stamp.stamp(conn.allocator, conn.fd, g_authserv_id, &.{
         .{
             .method = "spf",
             .result = result_str,
@@ -451,18 +467,7 @@ fn addArHeader(
                 .{ .ptype = "smtp", .property = "helo", .value = helo },
             },
         },
-    }) catch return @intFromEnum(responses.Code.@"continue");
-    defer conn.allocator.free(ar_value);
-
-    const hdr_payload = responses.addHeader(
-        conn.allocator,
-        "Authentication-Results",
-        ar_value,
-    ) catch return @intFromEnum(responses.Code.@"continue");
-    defer conn.allocator.free(hdr_payload);
-
-    codec.writePacket(conn.fd, hdr_payload) catch {};
-    return @intFromEnum(responses.Code.accept);
+    });
 }
 
 fn publishEvent(
@@ -584,6 +589,30 @@ test "extract domain from mail from" {
     try std.testing.expectEqualStrings("example.com", extractDomain("user@example.com"));
     try std.testing.expectEqualStrings("", extractDomain("<>"));
     try std.testing.expectEqualStrings("postmaster", extractDomain("postmaster"));
+}
+
+// X-9: this wrapper must stay fallible.
+//
+// The defect was a stamping path that swallowed every failure and returned
+// `accept`, delivering the message with no `spf=` field while reporting success.
+// `securedmarc` then computed a DMARC verdict from the evidence that survived.
+//
+// A regression would look like a `catch return continue` reappearing inside
+// `addArHeader` and the signature going back to `u8`, which is invisible in
+// review and impossible to spot from behaviour until mail is already wrong. This
+// asserts the type instead: if the error union is removed, the build fails here.
+test "the Authentication-Results wrapper cannot swallow failures" {
+    comptime {
+        const ret = @typeInfo(@TypeOf(addArHeader)).@"fn".return_type.?;
+        if (@typeInfo(ret) != .error_union) @compileError(
+            "addArHeader must return an error union. Swallowing a stamping failure " ++
+                "delivers the message with no spf= field while reporting success, and " ++
+                "securedmarc then evaluates DMARC without it (audit X-9).",
+        );
+        if (@typeInfo(ret).error_union.payload != void) @compileError(
+            "addArHeader should return !void; the caller maps the error to a tempfail.",
+        );
+    }
 }
 
 test "strip angle brackets" {
