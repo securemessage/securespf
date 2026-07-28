@@ -44,6 +44,7 @@ pub const SpfConfig = struct {
     zmq_endpoint: ?[]const u8,
     zmq_topic: []const u8,
     limits: connection_mod.Limits,
+    eval_limits: evaluate.Limits,
 };
 
 const reload_mod = securemilter.reload;
@@ -77,6 +78,7 @@ var g_strip_policy: header_scrub.StripPolicy = .{ .own_methods = &.{"spf"} };
 var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
 var g_allocator: Allocator = undefined;
 var g_health_monitor: ?*dns_mod.HealthMonitor = null;
+var g_eval_limits: evaluate.Limits = .{};
 
 // Global config generation counter — incremented on SIGHUP reload.
 var g_config_gen: reload_mod.ConfigGeneration = reload_mod.ConfigGeneration.init();
@@ -148,6 +150,10 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     // the forged-A-R scrub can only remove headers this daemon accumulated.
     const limits = connection_mod.Limits.fromSection(global);
 
+    // Bounds on one SPF evaluation (audit S-2). An SPF record is a program the
+    // sender writes, so the receiver is the one that has to bound it.
+    const eval_limits = evaluate.Limits.fromSection(global);
+
     // ZMQ event publishing
     const zmq_endpoint = global.get("ZmqEndpoint");
     const zmq_topic = global.getOrDefault("ZmqTopic", "spf.result");
@@ -170,6 +176,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .zmq_endpoint = zmq_endpoint,
         .zmq_topic = zmq_topic,
         .limits = limits,
+        .eval_limits = eval_limits,
     };
 }
 
@@ -209,6 +216,7 @@ pub fn main() !void {
 
     // Initialize module-level globals (read-only after this point)
     g_authserv_id = spf_cfg.authserv_id;
+    g_eval_limits = spf_cfg.eval_limits;
     g_dns_config = .{
         .nameservers = spf_cfg.dns_nameservers,
         .port = 53,
@@ -389,13 +397,21 @@ fn onEom(conn: *connection_mod.Connection) u8 {
         .receiver_host = g_authserv_id,
     };
 
-    const result = evaluate.evaluate(conn.allocator, &resolver, &eval_ctx);
+    const result = evaluate.evaluateWithLimits(conn.allocator, &resolver, &eval_ctx, g_eval_limits);
     const result_str = resultToString(result.result);
     const domain = if (result.domain.len > 0) result.domain else extractDomain(mail_from);
 
     const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
     const peer = conn.getPeerDisplay();
     log.info("id={s} peer={s}[{s}] client={s} from={s} result={s} elapsed={d}ms", .{ queue_id, peer.name, peer.ip, client_addr, mail_from, result_str, elapsed_ms });
+
+    // A permerror is four different faults sharing one label, and an operator
+    // fielding "why was my mail refused" needs to know which. The reason is a
+    // static string chosen from a fixed set, so there is nothing here for a
+    // sender to inject.
+    if (result.reason) |reason| {
+        log.info("id={s} domain={s} result={s} reason={s}", .{ queue_id, domain, result_str, reason });
+    }
 
     // Publish ZMQ event (fire-and-forget, non-blocking)
     publishEvent(conn.allocator, client_addr, helo, mail_from, result_str, domain);

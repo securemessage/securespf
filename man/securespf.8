@@ -129,6 +129,51 @@ being deferred.
 Both are read at startup only;
 .Dv SIGHUP
 does not change them.
+.It Cm MaxVoidLookups
+Largest number of terms in one SPF record whose DNS lookup finds nothing \(en
+either an authoritative
+.Dq no such name
+or an empty answer.
+Default: 2.
+0 disables the limit.
+.Pp
+RFC 7208 \(sc4.6.4 makes this limit a
+.Em SHOULD
+and recommends 2, which is why it is configurable while the other processing
+limits are not.
+Exceeding it produces
+.Cm permerror .
+.It Cm MaxEvaluationMs
+Wall-clock ceiling, in milliseconds, on evaluating one message.
+Default: 20000.
+0 disables the limit.
+.Pp
+RFC 7208 \(sc4.6.4 requires a time limit without naming a value; the 20 seconds
+suggested in \(sc10.1 for a complete check is the closest thing to a specified
+one.
+Exhausting the budget produces
+.Cm temperror ,
+not a verdict: the evaluation was incomplete, and answering
+.Cm fail
+would reject mail on the strength of terms that were never read.
+.Pp
+Two further limits from \(sc4.6.4 are fixed at 10 and deliberately not
+configurable, because senders design their records against those exact numbers:
+the count of DNS-querying terms per evaluation
+.Pq Cm a , Cm mx , Cm ptr , Cm exists , Cm include No and Cm redirect ,
+and the count of records examined inside a single
+.Cm mx
+or
+.Cm ptr
+mechanism.
+.Pp
+When either of these limits or any other condition ends an evaluation early,
+.Nm
+logs a second line for the message carrying
+.Cm reason=
+and the RFC section, because
+.Cm permerror
+alone does not distinguish a limit from a malformed record.
 .It Cm ZmqEndpoint
 ZeroMQ PUB endpoint for event publishing (e.g.,
 .Dq tcp://events.internal:5555 ) .

@@ -51,6 +51,33 @@ DnsRetries      = 2
 # MaxHeaders     = 500
 # MaxHeaderBytes = 1M
 
+# Bounds on evaluating one SPF record (RFC 7208 section 4.6.4). An SPF record is
+# a program the sender writes and the receiver runs, so the receiver is the only
+# party in a position to bound it.
+#
+# MaxVoidLookups is the number of terms whose DNS lookup may find nothing -- an
+# authoritative "no such name" or an empty answer -- before the evaluation stops
+# with permerror. The RFC makes this a SHOULD and recommends 2, which is why it
+# is settable here while the other limits are not.
+#
+# MaxEvaluationMs is the wall-clock ceiling in milliseconds. Exhausting it gives
+# temperror, not a verdict: the evaluation was incomplete, and answering "fail"
+# would reject mail on terms that were never read. The RFC asks for a time limit
+# without naming a value; 20 seconds is what section 10.1 suggests for a whole
+# check.
+#
+# 0 disables either limit. Two further limits are fixed at 10 and not
+# configurable, because senders design records against those exact numbers: the
+# DNS-querying terms per evaluation (a, mx, ptr, exists, include, redirect), and
+# the records examined inside one mx or ptr mechanism.
+#
+# When a limit or any other condition ends an evaluation early, securespf logs a
+# second line for the message carrying "reason=" and the RFC section, because
+# permerror on its own does not say whether a record was malformed or merely
+# too expensive.
+# MaxVoidLookups  = 2
+# MaxEvaluationMs = 20000
+
 # ZMQ event publishing endpoint (optional).
 # If not set, events are silently dropped.
 # ZmqEndpoint   = tcp://events.internal:5555
