@@ -10,6 +10,7 @@ const connection_mod = securemilter.connection;
 const worker_mod = securemilter.worker;
 const daemon_mod = securemilter.daemon;
 const auth_stamp = securemilter.auth_stamp;
+const escape = securemilter.escape;
 const commands = securemilter.milter.commands;
 const codec = securemilter.milter.codec;
 const responses = securemilter.milter.responses;
@@ -388,7 +389,14 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     if (whitelisted) {
         const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
         const peer = conn.getPeerDisplay();
-        log.info("id={s} peer={s}[{s}] client={s} from={s} result=pass (whitelisted) elapsed={d}ms", .{ queue_id, peer.name, peer.ip, client_addr, mail_from, elapsed_ms });
+        log.info("id={f} peer={f}[{f}] client={f} from={f} result=pass (whitelisted) elapsed={d}ms", .{
+            escape.logField(queue_id),
+            escape.logField(peer.name),
+            escape.logField(peer.ip),
+            escape.logField(client_addr),
+            escape.logField(mail_from),
+            elapsed_ms,
+        });
         addArHeader(conn, "pass", "client is whitelisted", extractDomain(mail_from), helo) catch |err|
             return auth_stamp.deferCode(err, "spf");
         return @intFromEnum(responses.Code.accept);
@@ -412,14 +420,31 @@ fn onEom(conn: *connection_mod.Connection) u8 {
 
     const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
     const peer = conn.getPeerDisplay();
-    log.info("id={s} peer={s}[{s}] client={s} from={s} result={s} elapsed={d}ms", .{ queue_id, peer.name, peer.ip, client_addr, mail_from, result_str, elapsed_ms });
+    // Every value here except `result_str` and the elapsed time is sender- or
+    // rDNS-controlled, so each is rendered as a single bare token: a newline in
+    // any of them would otherwise forge a second syslog line, and a space would
+    // make the next key appear to hold this value (audit X-5).
+    log.info("id={f} peer={f}[{f}] client={f} from={f} result={s} elapsed={d}ms", .{
+        escape.logField(queue_id),
+        escape.logField(peer.name),
+        escape.logField(peer.ip),
+        escape.logField(client_addr),
+        escape.logField(mail_from),
+        result_str,
+        elapsed_ms,
+    });
 
     // A permerror is four different faults sharing one label, and an operator
     // fielding "why was my mail refused" needs to know which. The reason is a
     // static string chosen from a fixed set, so there is nothing here for a
     // sender to inject.
     if (result.reason) |reason| {
-        log.info("id={s} domain={s} result={s} reason={s}", .{ queue_id, domain, result_str, reason });
+        log.info("id={f} domain={f} result={s} reason={s}", .{
+            escape.logField(queue_id),
+            escape.logField(domain),
+            result_str,
+            reason,
+        });
     }
 
     // Publish ZMQ event (fire-and-forget, non-blocking)
@@ -478,9 +503,22 @@ fn publishEvent(
     result_str: []const u8,
     domain: []const u8,
 ) void {
+    // Every value but `result_str` comes from the sender or from rDNS. A bare
+    // `"` in any of them used to end the JSON string early and leave the rest of
+    // the payload to be reinterpreted, so the consumer -- SecureMessageWebhooks
+    // -- received either invalid JSON or fields the sender chose (audit X-5).
+    //
+    // Escaped rather than substituted, because an event is machine-read: the
+    // consumer must receive the value this daemon actually saw.
     const json = std.fmt.allocPrint(allocator,
-        \\{{"client_ip":"{s}","helo":"{s}","mail_from":"{s}","result":"{s}","domain":"{s}"}}
-    , .{ client_ip, helo, mail_from, result_str, domain }) catch return;
+        \\{{"client_ip":"{f}","helo":"{f}","mail_from":"{f}","result":"{s}","domain":"{f}"}}
+    , .{
+        escape.jsonString(client_ip),
+        escape.jsonString(helo),
+        escape.jsonString(mail_from),
+        result_str,
+        escape.jsonString(domain),
+    }) catch return;
     defer allocator.free(json);
 
     getPublisher().publish(json);
