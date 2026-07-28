@@ -5,6 +5,16 @@
 # Identifier used in Authentication-Results headers.
 AuthservID      = mail.example.com
 
+# Trust boundary (RFC 8601 section 5).
+# SecureSPF always removes pre-existing Authentication-Results headers that
+# claim our AuthservID and assert an spf= result, since a remote sender must
+# not be able to supply its own SPF verdict.
+# Set this to yes on the FIRST milter in the chain to additionally remove
+# every other Authentication-Results header claiming our AuthservID. Leave it
+# unset on later milters, which must be able to read the results the earlier
+# ones produced.
+StripAuthResults = yes
+
 # Number of worker threads. 0 = auto-detect CPU count.
 WorkerThreads   = 0
 

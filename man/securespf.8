@@ -40,6 +40,17 @@ sections.
 Identifier for Authentication-Results headers.
 Default:
 .Dq localhost .
+.It Cm StripAuthResults
+Remove every pre-existing Authentication-Results header claiming our
+.Cm AuthservID ,
+not just the ones asserting an
+.Li spf=
+result.
+Enable this on the first milter in the chain, which sits at the trust boundary
+(RFC 8601 Section 5).
+Leave it disabled on later milters, which must be able to read the results
+earlier ones produced.
+Default: no.
 .It Cm WorkerThreads
 Number of worker threads.
 0 means auto-detect CPU count.

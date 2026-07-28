@@ -16,6 +16,7 @@ const responses = securemilter.milter.responses;
 const negotiate = securemilter.milter.negotiate;
 const zmq = securemilter.zmq;
 const log = securemilter.log;
+const header_scrub = securemilter.header_scrub;
 
 const spf = @import("spf.zig");
 const macro = @import("macro.zig");
@@ -39,6 +40,7 @@ pub const SpfConfig = struct {
     dns_cache_size: u32,
     dns_negative_ttl: u32,
     whitelist_file: ?[]const u8,
+    strip_auth_results: bool,
     zmq_endpoint: ?[]const u8,
     zmq_topic: []const u8,
 };
@@ -52,6 +54,7 @@ var g_whitelist: whitelist.Whitelist = .{};
 var g_zmq_endpoint: ?[]const u8 = null;
 var g_zmq_topic: []const u8 = "spf.result";
 var g_whitelist_file: ?[]const u8 = null;
+var g_strip_policy: header_scrub.StripPolicy = .{ .own_methods = &.{"spf"} };
 var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
 var g_allocator: Allocator = undefined;
 var g_health_monitor: ?*dns_mod.HealthMonitor = null;
@@ -117,6 +120,10 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     // Whitelist
     const wl_file = global.get("WhitelistFile");
 
+    // Trust boundary: when this is the first milter in the chain, no A-R header
+    // claiming our authserv-id can be genuine on arrival (RFC 8601 §5).
+    const strip_auth_results = global.getBool("StripAuthResults", false);
+
     // ZMQ event publishing
     const zmq_endpoint = global.get("ZmqEndpoint");
     const zmq_topic = global.getOrDefault("ZmqTopic", "spf.result");
@@ -135,6 +142,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .dns_cache_size = dns_cache_size,
         .dns_negative_ttl = dns_negative_ttl,
         .whitelist_file = wl_file,
+        .strip_auth_results = strip_auth_results,
         .zmq_endpoint = zmq_endpoint,
         .zmq_topic = zmq_topic,
     };
@@ -187,6 +195,7 @@ pub fn main() !void {
 
     g_zmq_endpoint = spf_cfg.zmq_endpoint;
     g_zmq_topic = spf_cfg.zmq_topic;
+    g_strip_policy = .{ .own_methods = &.{"spf"}, .strip_all = spf_cfg.strip_auth_results };
 
     // Load whitelist if configured
     g_whitelist_file = spf_cfg.whitelist_file;
@@ -250,7 +259,7 @@ pub fn main() !void {
         .on_mail_from = onMailFrom,
         .on_eom = onEom,
         .on_reload = onWorkerReload,
-        .required_actions = .{ .add_headers = true },
+        .required_actions = .{ .add_headers = true, .change_headers = true },
         .skip_flags = .{ .no_body = true }, // SPF doesn't need message body
     };
 
@@ -300,6 +309,11 @@ fn onMailFrom(conn: *connection_mod.Connection, _: []const u8) u8 {
 
 fn onEom(conn: *connection_mod.Connection) u8 {
     const start_ns = std.time.nanoTimestamp();
+
+    // Drop forged results before producing our own, so nothing downstream can
+    // read an spf= verdict this daemon did not issue.
+    _ = header_scrub.stripAuthResults(conn, g_authserv_id, g_strip_policy);
+
     const client_addr = conn.macros.client_addr orelse "unknown";
     const mail_from_raw = conn.mail_from_raw orelse "<>";
     const helo = conn.helo_name orelse "unknown";
