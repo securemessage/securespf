@@ -46,11 +46,29 @@ pub const SpfConfig = struct {
 };
 
 const reload_mod = securemilter.reload;
+const rcu_mod = securemilter.rcu;
 
 // Module-level config set before worker spawn, read-only during runtime.
 var g_authserv_id: []const u8 = "localhost";
 var g_dns_config: dns_mod.ResolverConfig = .{};
-var g_whitelist: whitelist.Whitelist = .{};
+/// Whitelist behind an RCU container: workers read it on every message while
+/// SIGHUP replaces it. Freeing the old entries in place was audit X-2 — a
+/// worker iterating `entries` in `contains()` would read freed memory.
+var g_whitelist: WhitelistRcu = undefined;
+const WhitelistRcu = rcu_mod.Rcu(whitelist.Whitelist);
+
+fn freeWhitelist(allocator: Allocator, wl: *whitelist.Whitelist) void {
+    wl.deinit();
+    allocator.destroy(wl);
+}
+
+/// Heap-allocate a parsed whitelist so it can be published. The container owns
+/// it from here on.
+fn boxWhitelist(allocator: Allocator, wl: whitelist.Whitelist) !*whitelist.Whitelist {
+    const boxed = try allocator.create(whitelist.Whitelist);
+    boxed.* = wl;
+    return boxed;
+}
 var g_zmq_endpoint: ?[]const u8 = null;
 var g_zmq_topic: []const u8 = "spf.result";
 var g_whitelist_file: ?[]const u8 = null;
@@ -198,10 +216,20 @@ pub fn main() !void {
     g_strip_policy = .{ .own_methods = &.{"spf"}, .strip_all = spf_cfg.strip_auth_results };
 
     // Load whitelist if configured
+    g_whitelist = WhitelistRcu.init(allocator, freeWhitelist);
     g_whitelist_file = spf_cfg.whitelist_file;
     if (spf_cfg.whitelist_file) |wl_path| {
         if (whitelist.Whitelist.loadFile(allocator, wl_path)) |wl| {
-            g_whitelist = wl;
+            if (boxWhitelist(allocator, wl)) |boxed| {
+                g_whitelist.publish(&g_config_gen, boxed) catch |err| {
+                    freeWhitelist(allocator, boxed);
+                    log.warn("failed to publish whitelist {s}: {}", .{ wl_path, err });
+                };
+            } else |err| {
+                var owned = wl;
+                owned.deinit();
+                log.warn("failed to load whitelist {s}: {}", .{ wl_path, err });
+            }
         } else |_| {
             log.warn("failed to load whitelist: {s}", .{wl_path});
         }
@@ -285,6 +313,12 @@ pub fn main() !void {
     // Main thread: signal loop handles SIGHUP (reload) and SIGTERM (shutdown)
     daemon_mod.ManagedSignals.signalLoop(shutdown_pipe[1], reloadConfig);
     for (threads.items) |t| t.join();
+
+    // Workers are joined, so nothing can be holding a whitelist reference and
+    // the retire list can be emptied unconditionally.
+    g_whitelist.deinit();
+    g_config_gen.deinit(allocator);
+
     if (g_health_monitor) |monitor| monitor.deinit();
 }
 
@@ -322,8 +356,13 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     // Strip angle brackets from MAIL FROM (Postfix sends "<user@domain>")
     const mail_from = stripAngleBrackets(mail_from_raw);
 
-    // Check whitelist — skip SPF for trusted hosts
-    if (g_whitelist.contains(client_addr)) {
+    // Check whitelist — skip SPF for trusted hosts.
+    //
+    // The reference is valid for this message: workers only announce
+    // quiescence at the top of the event loop, so nothing can free the list
+    // out from under this call (see securemilter rcu.zig).
+    const whitelisted = if (g_whitelist.get()) |wl| wl.contains(client_addr) else false;
+    if (whitelisted) {
         const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
         const peer = conn.getPeerDisplay();
         log.info("id={s} peer={s}[{s}] client={s} from={s} result=pass (whitelisted) elapsed={d}ms", .{ queue_id, peer.name, peer.ip, client_addr, mail_from, elapsed_ms });
@@ -440,27 +479,52 @@ fn extractDomain(mail_from: []const u8) []const u8 {
 // Reload
 // =============================================================================
 
-/// Main-thread reload callback: re-reads whitelist file and increments
-/// the config generation counter. Workers will pick up the new generation
-/// on their next event loop iteration and call onWorkerReload().
+/// Main-thread reload callback: re-reads the whitelist file and publishes it.
+///
+/// Publishing advances the config generation, so workers pick the new list up
+/// on their next message and call onWorkerReload() on their next loop
+/// iteration. The previous list is retired rather than freed, and reclaimed
+/// once every worker has been seen at a quiescent point past the swap.
 fn reloadConfig() void {
-    // Re-read whitelist (the primary reloadable state for SecureSPF)
-    if (g_whitelist_file) |wl_path| {
-        if (whitelist.Whitelist.loadFile(g_allocator, wl_path)) |new_wl| {
-            // Free old entries if they were heap-allocated
-            if (g_whitelist.allocator) |old_alloc| {
-                old_alloc.free(g_whitelist.entries);
-            }
-            g_whitelist = new_wl;
-            log.info("whitelist reloaded from {s}", .{wl_path});
-        } else |_| {
-            log.warn("reload: failed to re-read whitelist {s}, keeping previous", .{wl_path});
-        }
-    }
+    const wl_path = g_whitelist_file orelse {
+        _ = g_config_gen.increment();
+        log.info("config generation advanced to {d}", .{g_config_gen.load()});
+        return;
+    };
 
-    // Signal workers that config has changed
-    g_config_gen.increment();
-    log.info("config generation advanced to {d}", .{g_config_gen.load()});
+    var new_wl = whitelist.Whitelist.loadFile(g_allocator, wl_path) catch {
+        log.warn("reload: failed to re-read whitelist {s}, keeping previous", .{wl_path});
+        _ = g_config_gen.increment();
+        return;
+    };
+
+    const boxed = boxWhitelist(g_allocator, new_wl) catch {
+        new_wl.deinit();
+        log.warn("reload: out of memory boxing whitelist, keeping previous", .{});
+        _ = g_config_gen.increment();
+        return;
+    };
+
+    g_whitelist.publish(&g_config_gen, boxed) catch {
+        // publish reserves before it swaps, so on failure nothing changed and
+        // the previous list is still installed.
+        freeWhitelist(g_allocator, boxed);
+        log.warn("reload: out of memory publishing whitelist, keeping previous", .{});
+        _ = g_config_gen.increment();
+        return;
+    };
+
+    // Pull the workers out of kevent() so they reach a quiescent point and the
+    // superseded list becomes reclaimable. Without this an idle worker pins
+    // the safe generation and the retire list grows for as long as reloads
+    // keep arriving.
+    g_config_gen.wake();
+
+    log.info("whitelist reloaded from {s} (generation {d}, {d} awaiting reclamation)", .{
+        wl_path,
+        g_config_gen.load(),
+        g_whitelist.retiredCount(),
+    });
 }
 
 /// Per-worker reload callback: called when this worker detects the
