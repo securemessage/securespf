@@ -43,6 +43,7 @@ pub const SpfConfig = struct {
     strip_auth_results: bool,
     zmq_endpoint: ?[]const u8,
     zmq_topic: []const u8,
+    limits: connection_mod.Limits,
 };
 
 const reload_mod = securemilter.reload;
@@ -142,6 +143,11 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     // claiming our authserv-id can be genuine on arrival (RFC 8601 §5).
     const strip_auth_results = global.getBool("StripAuthResults", false);
 
+    // Caps on attacker-controlled message content (audit X-4). SPF never reads
+    // the body, so only the header caps bite here — they still matter, because
+    // the forged-A-R scrub can only remove headers this daemon accumulated.
+    const limits = connection_mod.Limits.fromSection(global);
+
     // ZMQ event publishing
     const zmq_endpoint = global.get("ZmqEndpoint");
     const zmq_topic = global.getOrDefault("ZmqTopic", "spf.result");
@@ -163,6 +169,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .strip_auth_results = strip_auth_results,
         .zmq_endpoint = zmq_endpoint,
         .zmq_topic = zmq_topic,
+        .limits = limits,
     };
 }
 
@@ -289,6 +296,7 @@ pub fn main() !void {
         .on_reload = onWorkerReload,
         .required_actions = .{ .add_headers = true, .change_headers = true },
         .skip_flags = .{ .no_body = true }, // SPF doesn't need message body
+        .limits = spf_cfg.limits,
     };
 
     // Create shutdown pipe: write-end wakes all workers from kevent()

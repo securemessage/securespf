@@ -36,6 +36,21 @@ DnsNameserver   = 127.0.0.1
 DnsTimeout      = 5
 DnsRetries      = 2
 
+# --- Resource limits on attacker-controlled message content ---
+#
+# Both take effect at startup, not on SIGHUP. 0 disables the limit.
+#
+# SPF is evaluated from the envelope and client IP, so this daemon never buffers
+# a message body and has no MaxBodyBytes. It does accumulate the header block, in
+# order to strip Authentication-Results headers forging its own AuthservID.
+#
+# A message whose header block exceeds either limit is tempfailed rather than
+# delivered: headers past the limit are never seen, so a forged
+# Authentication-Results hidden beyond it could not be stripped. Raise these if
+# legitimate mail crossing many forwarders and mailing lists is being deferred.
+# MaxHeaders     = 500
+# MaxHeaderBytes = 1M
+
 # ZMQ event publishing endpoint (optional).
 # If not set, events are silently dropped.
 # ZmqEndpoint   = tcp://events.internal:5555

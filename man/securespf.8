@@ -96,6 +96,39 @@ TTL in seconds for negative DNS cache entries (NXDOMAIN, SERVFAIL).
 Default: 60.
 .It Cm WhitelistFile
 Path to a file containing IP addresses (one per line) that bypass SPF checks.
+.It Cm MaxHeaders
+Largest number of headers accumulated for one message.
+Default: 500.
+0 disables the limit.
+.It Cm MaxHeaderBytes
+Largest total header size, names plus values, accumulated for one message.
+Accepts an optional
+.Cm K , Cm M
+or
+.Cm G
+suffix.
+Default: 1M.
+0 disables the limit.
+.Pp
+SPF is evaluated from the envelope sender and client address, so
+.Nm
+never buffers a message body and has no
+.Cm MaxBodyBytes .
+It does accumulate the header block, in order to strip
+.Cm Authentication-Results
+headers forging its own
+.Cm AuthservID .
+.Pp
+A message exceeding either limit is tempfailed rather than delivered.
+Headers past the limit are never read, and
+.Nm
+can only strip a forged header that it read, so delivering the message would let
+one hidden beyond the limit through uninspected.
+Raise these if legitimate mail crossing many forwarders and mailing lists is
+being deferred.
+Both are read at startup only;
+.Dv SIGHUP
+does not change them.
 .It Cm ZmqEndpoint
 ZeroMQ PUB endpoint for event publishing (e.g.,
 .Dq tcp://events.internal:5555 ) .
