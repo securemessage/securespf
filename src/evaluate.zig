@@ -292,8 +292,7 @@ const ip4_text_max = 15;
 fn mappedIp4(ip: []const u8, buf: []u8) ?[]const u8 {
     // Only an address written in IPv6 form can be mapped.
     if (mem.indexOfScalar(u8, ip, ':') == null) return null;
-    const parsed = net.Ip6Address.parse(ip, 0) catch return null;
-    const octets = parsed.sa.addr;
+    const octets = spf.parseIp6Bytes(ip) catch return null;
 
     // RFC 4291 §2.5.5.2: 80 zero bits, then 16 one bits, then the address.
     if (!mem.allEqual(u8, octets[0..10], 0)) return null;
@@ -465,10 +464,11 @@ fn matchIp6(ctx: *const EvalContext, directive: spf.Directive) bool {
     if (!ctx.is_ipv6) return false;
     const arg = directive.argument orelse return false;
     const prefix_len = directive.cidr6 orelse 128;
-    // Parse both addresses and compare with prefix
-    const client = net.Ip6Address.parse(ctx.client_ip, 0) catch return false;
-    const network = net.Ip6Address.parse(arg, 0) catch return false;
-    return matchIp6Cidr(client.sa.addr, network.sa.addr, prefix_len);
+    // Both addresses go through the same RFC 4291 parser the record was validated
+    // with, so a literal accepted at parse time cannot be read differently here.
+    const client = spf.parseIp6Bytes(ctx.client_ip) catch return false;
+    const network = spf.parseIp6Bytes(arg) catch return false;
+    return matchIp6Cidr(client, network, prefix_len);
 }
 
 fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
