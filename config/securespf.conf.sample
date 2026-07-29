@@ -82,8 +82,13 @@ DnsRetries      = 2
 # If not set, events are silently dropped.
 # ZmqEndpoint   = tcp://events.internal:5555
 
+# Loopback. "inbound" describes the mail, not this socket: the client is always the
+# local Postfix. The milter protocol has no authentication, so anything that can
+# reach this port supplies the client IP, HELO and MAIL FROM that check_host() runs
+# on -- it chooses the SPF result this host will stamp. Widen only if Postfix
+# genuinely runs on another machine, and then restrict it with pf.
 [listener:inbound]
-Socket          = inet:8890@0.0.0.0
+Socket          = inet:8890@127.0.0.1
 
 # Optional: hosts/networks that bypass SPF checking.
 # WhitelistFile = /usr/local/etc/securespf/whitelist

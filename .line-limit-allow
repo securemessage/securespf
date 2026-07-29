@@ -1,3 +1,9 @@
+# 2026-07-29, X-13: the implicit listener now binds loopback instead of 0.0.0.0.
+#   main.zig 661 -> 727. This daemon had NO configuration test at all, which is how
+#   an unauthenticated socket on every interface stayed the default; the growth is
+#   two tests (loopback default, explicit wide bind still honoured), the note that
+#   a Socket= host BORROWS from the parsed config and dangles if the config is freed
+#   first, and the reasoning for the default itself.
 # Files currently over the 400-line goal, with the ceiling each
 # may not exceed. Ceilings tighten by themselves as files shrink; a
 # file that reaches the goal drops off this list entirely.
@@ -7,5 +13,5 @@
 # An empty list below means every file meets the goal.
 1120 src/evaluate.zig
 451 src/macro.zig
-661 src/main.zig
+727 src/main.zig
 776 src/spf.zig

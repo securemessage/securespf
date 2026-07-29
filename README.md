@@ -40,7 +40,7 @@ PidFile         = /var/run/securespf/securespf.pid
 DnsNameserver   = 127.0.0.1
 
 [listener:inbound]
-Socket          = inet:8890@0.0.0.0
+Socket          = inet:8890@127.0.0.1
 EOF
 
 # Install and start

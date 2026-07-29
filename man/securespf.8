@@ -198,7 +198,21 @@ for Unix domain sockets.
 .El
 .Pp
 If no listener sections are defined, the default is
-.Dq inet:8890@0.0.0.0 .
+.Dq inet:8890@127.0.0.1 ,
+loopback only.
+.Pp
+The milter protocol carries no authentication, so any client that can reach this
+socket supplies the connecting IP address,
+.Dv HELO
+and
+.Dv MAIL FROM
+that
+.Fn check_host
+is evaluated against, and therefore chooses the SPF result this host records.
+Only the local MTA should ever connect.
+Bind a routable address only when the MTA runs on a different machine, and
+restrict access to it with
+.Xr pf 4 .
 .Sh SIGNALS
 .Bl -tag -width "SIGTERM" -compact
 .It Dv SIGHUP
