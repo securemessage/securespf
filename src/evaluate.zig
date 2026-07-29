@@ -511,10 +511,10 @@ fn matchA(
             }
         }
     } else {
-        const client = net.Ip6Address.parse(ctx.client_ip, 0) catch return false;
+        const client = spf.parseIp6Bytes(ctx.client_ip) catch return false;
         for (result.answers) |ans| {
             if (ans.record_type == @intFromEnum(dns.RecordType.AAAA) and ans.data.len >= 16) {
-                if (matchIp6Cidr(client.sa.addr, ans.data[0..16].*, prefix6)) return true;
+                if (matchIp6Cidr(client, ans.data[0..16].*, prefix6)) return true;
             }
         }
     }
@@ -566,10 +566,10 @@ fn matchMx(
                 }
             }
         } else {
-            const client = net.Ip6Address.parse(ctx.client_ip, 0) catch return false;
+            const client = spf.parseIp6Bytes(ctx.client_ip) catch return false;
             for (addr_result.answers) |a_ans| {
                 if (a_ans.record_type == @intFromEnum(dns.RecordType.AAAA) and a_ans.data.len >= 16) {
-                    if (matchIp6Cidr(client.sa.addr, a_ans.data[0..16].*, prefix6)) return true;
+                    if (matchIp6Cidr(client, a_ans.data[0..16].*, prefix6)) return true;
                 }
             }
         }
