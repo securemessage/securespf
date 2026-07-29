@@ -443,11 +443,11 @@ fn matchDirective(
         .all => true,
         .ip4 => matchIp4(ctx, directive),
         .ip6 => matchIp6(ctx, directive),
-        .a => matchA(resolver, ctx, domain, directive, state),
-        .mx => matchMx(resolver, ctx, domain, directive, state),
+        .a => matchA(allocator, resolver, ctx, domain, directive, state),
+        .mx => matchMx(allocator, resolver, ctx, domain, directive, state),
         .include => matchInclude(allocator, resolver, ctx, directive, state),
         .exists => matchExists(allocator, resolver, directive, domain, ctx, state),
-        .ptr => matchPtr(resolver, ctx, domain, directive, state),
+        .ptr => matchPtr(allocator, resolver, ctx, domain, directive, state),
     };
 }
 
@@ -487,7 +487,44 @@ fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
     return true;
 }
 
+/// The name a mechanism's domain-spec refers to, with macros expanded.
+///
+/// One helper for every mechanism that takes a domain-spec, because `a`, `mx`,
+/// `ptr` and `exists` all expand the same grammar against the same context. Only
+/// `exists` used to do it, so `a:%{H}` queried the four literal characters of the
+/// macro and `mx:%{d}` the same -- the fourth time a single rule implemented in
+/// several places had diverged in only some of them, after D-1, A-5 and D-15.
+///
+/// Caller owns the returned memory.
+fn expandTarget(
+    allocator: Allocator,
+    ctx: *const EvalContext,
+    domain: []const u8,
+    directive: spf.Directive,
+) EvalError![]u8 {
+    const template = directive.argument orelse return allocator.dupe(u8, domain);
+
+    const macro_ctx = macro.Context{
+        .sender = ctx.sender,
+        .domain = domain,
+        .client_ip = ctx.client_ip,
+        .is_ipv6 = ctx.is_ipv6,
+        .helo_domain = ctx.helo_domain,
+        .receiver_host = ctx.receiver_host,
+    };
+
+    // A macro that will not expand is a defect in the record, and §4.6 makes a
+    // syntax defect a permerror. Reporting "did not match" instead carries the
+    // evaluation on to the record's own `-all` and rejects the mail on the
+    // strength of a term that was never evaluated.
+    return macro.expand(allocator, template, &macro_ctx) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.RecordSyntax,
+    };
+}
+
 fn matchA(
+    allocator: Allocator,
     resolver: *dns.Resolver,
     ctx: *const EvalContext,
     domain: []const u8,
@@ -495,7 +532,8 @@ fn matchA(
     state: *EvalState,
 ) EvalError!bool {
     try state.chargeTerm();
-    const target = directive.argument orelse domain;
+    const target = try expandTarget(allocator, ctx, domain, directive);
+    defer allocator.free(target);
     const prefix4 = directive.cidr4 orelse 32;
     const prefix6 = directive.cidr6 orelse 128;
 
@@ -522,6 +560,7 @@ fn matchA(
 }
 
 fn matchMx(
+    allocator: Allocator,
     resolver: *dns.Resolver,
     ctx: *const EvalContext,
     domain: []const u8,
@@ -529,7 +568,8 @@ fn matchMx(
     state: *EvalState,
 ) EvalError!bool {
     try state.chargeTerm();
-    const target = directive.argument orelse domain;
+    const target = try expandTarget(allocator, ctx, domain, directive);
+    defer allocator.free(target);
     const prefix4 = directive.cidr4 orelse 32;
     const prefix6 = directive.cidr6 orelse 128;
 
@@ -615,27 +655,9 @@ fn matchExists(
     ctx: *const EvalContext,
     state: *EvalState,
 ) EvalError!bool {
-    const target_template = directive.argument orelse return false;
     try state.chargeTerm();
 
-    // Expand macros in the target domain
-    const macro_ctx = macro.Context{
-        .sender = ctx.sender,
-        .domain = domain,
-        .client_ip = ctx.client_ip,
-        .is_ipv6 = ctx.is_ipv6,
-        .helo_domain = ctx.helo_domain,
-        .receiver_host = ctx.receiver_host,
-    };
-
-    // A macro that will not expand is a defect in the record, and §4.6 makes a
-    // syntax defect a permerror. Reporting "did not match" instead — which is
-    // what this did — carried the evaluation on to the record's own `-all` and
-    // rejected the mail on the strength of a term that was never evaluated.
-    const expanded = macro.expand(allocator, target_template, &macro_ctx) catch |err| return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => error.RecordSyntax,
-    };
+    const expanded = try expandTarget(allocator, ctx, domain, directive);
     defer allocator.free(expanded);
 
     // exists: any A record is a match. RFC 7208 §5.7 specifies an A query even
@@ -645,7 +667,31 @@ fn matchExists(
     return true;
 }
 
+/// The `ip6.arpa` reverse name for an IPv6 address.
+///
+/// RFC 3596 §2.5: each of the 32 nibbles as a hex digit, least significant first,
+/// dot-separated, under `ip6.arpa`.
+fn reverseIp6Name(buf: []u8, octets: [16]u8) ?[]const u8 {
+    const hex = "0123456789abcdef";
+    const suffix = "ip6.arpa";
+    if (buf.len < 32 * 2 + suffix.len) return null;
+
+    var len: usize = 0;
+    var i: usize = octets.len;
+    while (i > 0) {
+        i -= 1;
+        buf[len] = hex[octets[i] & 0x0F];
+        buf[len + 1] = '.';
+        buf[len + 2] = hex[octets[i] >> 4];
+        buf[len + 3] = '.';
+        len += 4;
+    }
+    @memcpy(buf[len..][0..suffix.len], suffix);
+    return buf[0 .. len + suffix.len];
+}
+
 fn matchPtr(
+    allocator: Allocator,
     resolver: *dns.Resolver,
     ctx: *const EvalContext,
     domain: []const u8,
@@ -655,17 +701,26 @@ fn matchPtr(
     // RFC 7208 §5.5: ptr mechanism is NOT RECOMMENDED but MUST be implemented
     try state.chargeTerm();
 
-    const target_domain = directive.argument orelse domain;
+    const target_domain = try expandTarget(allocator, ctx, domain, directive);
+    defer allocator.free(target_domain);
 
-    // Build reverse lookup name
-    // For now, only IPv4 PTR is implemented
-    if (ctx.is_ipv6) return false;
-
-    const client_bytes = spf.parseIp4Bytes(ctx.client_ip) catch return false;
-    var ptr_buf: [64]u8 = undefined;
-    const ptr_name = std.fmt.bufPrint(&ptr_buf, "{d}.{d}.{d}.{d}.in-addr.arpa", .{
-        client_bytes[3], client_bytes[2], client_bytes[1], client_bytes[0],
-    }) catch return false;
+    // §5.5 builds the reverse name under in-addr.arpa for an IPv4 connection and
+    // ip6.arpa for an IPv6 one, and confirms the forward lookup in the same family.
+    // Bailing out on IPv6, as this did, made `ptr` silently unmatchable for every
+    // IPv6 client rather than unimplemented -- a record of `v=spf1 ptr -all`
+    // rejected mail from exactly the hosts it meant to authorize.
+    var client4: [4]u8 = undefined;
+    var client6: [16]u8 = undefined;
+    var ptr_buf: [80]u8 = undefined;
+    const ptr_name = if (ctx.is_ipv6) blk: {
+        client6 = spf.parseIp6Bytes(ctx.client_ip) catch return false;
+        break :blk reverseIp6Name(&ptr_buf, client6) orelse return false;
+    } else blk: {
+        client4 = spf.parseIp4Bytes(ctx.client_ip) catch return false;
+        break :blk std.fmt.bufPrint(&ptr_buf, "{d}.{d}.{d}.{d}.in-addr.arpa", .{
+            client4[3], client4[2], client4[1], client4[0],
+        }) catch return false;
+    };
 
     var ptr_result = (try state.query(resolver, ptr_name, .PTR)) orelse return false;
     defer ptr_result.deinit();
@@ -684,14 +739,22 @@ fn matchPtr(
         records += 1;
         if (records > Limits.MAX_RECORDS_PER_MECHANISM) break;
 
-        // Confirm forward lookup matches client
-        var fwd_result = (try state.querySub(resolver, validated_name, .A)) orelse continue;
+        // Confirm the forward lookup resolves back to the connecting address, in
+        // the family the connection actually used.
+        const fwd_type: dns.RecordType = if (ctx.is_ipv6) .AAAA else .A;
+        var fwd_result = (try state.querySub(resolver, validated_name, fwd_type)) orelse continue;
         defer fwd_result.deinit();
 
         var confirmed = false;
         for (fwd_result.answers) |fwd_ans| {
-            if (fwd_ans.record_type == @intFromEnum(dns.RecordType.A) and fwd_ans.data.len >= 4) {
-                if (mem.eql(u8, fwd_ans.data[0..4], &client_bytes)) {
+            if (fwd_ans.record_type != @intFromEnum(fwd_type)) continue;
+            if (ctx.is_ipv6) {
+                if (fwd_ans.data.len >= 16 and mem.eql(u8, fwd_ans.data[0..16], &client6)) {
+                    confirmed = true;
+                    break;
+                }
+            } else {
+                if (fwd_ans.data.len >= 4 and mem.eql(u8, fwd_ans.data[0..4], &client4)) {
                     confirmed = true;
                     break;
                 }

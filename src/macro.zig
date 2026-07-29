@@ -84,7 +84,8 @@ fn expandSpec(allocator: Allocator, spec: []const u8, ctx: *const Context) ![]u8
     var pos: usize = 1;
     var truncate: ?usize = null;
     var reverse = false;
-    var delimiter: u8 = '.';
+    // §7.1: "If no delimiter is specified, '.' is used."
+    var delimiters: []const u8 = ".";
 
     // Parse digits
     const digit_start = pos;
@@ -101,18 +102,23 @@ fn expandSpec(allocator: Allocator, spec: []const u8, ctx: *const Context) ![]u8
     }
 
     // Parse delimiter(s) — RFC 7208 §7.1: "." / "-" / "+" / "," / "/" / "_" / "="
+    //
+    // The grammar is `*delimiter`, plural, and *every* character listed splits the
+    // value: `%{l2r+-}` splits on both "+" and "-". Honouring only the first, as
+    // this did, silently changed which parts the transformers then saw.
     if (pos < spec.len) {
-        delimiter = spec[pos];
-        if (!isDelimiter(delimiter)) return error.InvalidMacro;
-        // Only first delimiter character is used per the RFC split semantics
+        for (spec[pos..]) |ch| {
+            if (!isDelimiter(ch)) return error.InvalidMacro;
+        }
+        delimiters = spec[pos..];
     }
 
     // Get the raw value for this macro letter
     const raw = try getMacroValue(allocator, letter, ctx);
     defer allocator.free(raw);
 
-    // Apply transformers: split by delimiter, reverse, truncate, rejoin with '.'
-    return applyTransformers(allocator, raw, delimiter, reverse, truncate);
+    // Apply transformers: split on any delimiter, reverse, truncate, rejoin with '.'
+    return applyTransformers(allocator, raw, delimiters, reverse, truncate);
 }
 
 fn isDelimiter(ch: u8) bool {
@@ -193,15 +199,15 @@ fn expandClientIp(allocator: Allocator, ctx: *const Context) ![]u8 {
 fn applyTransformers(
     allocator: Allocator,
     value: []const u8,
-    delimiter: u8,
+    delimiters: []const u8,
     reverse: bool,
     truncate: ?usize,
 ) ![]u8 {
-    // Split by delimiter
+    // Split on any of the delimiter characters.
     var parts: std.ArrayListUnmanaged([]const u8) = .{};
     defer parts.deinit(allocator);
 
-    var iter = mem.splitScalar(u8, value, delimiter);
+    var iter = mem.splitAny(u8, value, delimiters);
     while (iter.next()) |part| {
         try parts.append(allocator, part);
     }
