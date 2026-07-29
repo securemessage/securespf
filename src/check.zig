@@ -27,6 +27,7 @@ const Usage =
     \\  -s <sender>      MAIL FROM address, e.g. user@example.com (required)
     \\  -e <helo>        EHLO/HELO domain (default: extracted from sender)
     \\  -n <nameserver>  DNS nameserver (default: 127.0.0.1)
+    \\  -p <port>        DNS nameserver port (default: 53)
     \\  -h               Show this help
     \\
     \\Examples:
@@ -48,6 +49,11 @@ pub fn main() !void {
     var sender: ?[]const u8 = null;
     var helo: ?[]const u8 = null;
     var nameserver: []const u8 = "127.0.0.1";
+    // Exposed so an evaluation can be pointed at a nameserver that is not on
+    // port 53 -- a local resolver under test, or the mock zone the RFC 7208
+    // conformance suite is driven against, neither of which can bind 53 without
+    // privilege.
+    var port: u16 = 53;
 
     while (args.next()) |arg| {
         if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "--help")) {
@@ -61,6 +67,9 @@ pub fn main() !void {
             helo = args.next() orelse return fatal("missing argument for -e");
         } else if (mem.eql(u8, arg, "-n")) {
             nameserver = args.next() orelse return fatal("missing argument for -n");
+        } else if (mem.eql(u8, arg, "-p")) {
+            const raw = args.next() orelse return fatal("missing argument for -p");
+            port = std.fmt.parseInt(u16, raw, 10) catch return fatal("-p must be a port number");
         } else {
             return fatal("unknown option (use -h for help)");
         }
@@ -78,6 +87,7 @@ pub fn main() !void {
     const ns_slice: []const []const u8 = &.{nameserver};
     const dns_config = dns_mod.ResolverConfig{
         .nameservers = ns_slice,
+        .port = port,
         .timeout_ms = 5000,
         .retries = 2,
     };
