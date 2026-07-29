@@ -20,3 +20,10 @@ zig-cache/
 # artefact ignored by filename rather than by pattern.
 __pycache__/
 *.pyc
+
+# The conformance harness virtualenv: thousands of third-party files, rebuilt from
+# requirements.txt in one command. test/rfc7208/README.md tells you to create it
+# right here, so `git status` offered to add the whole tree the first time the
+# suite was run from a clean checkout. Already listed in securearc for the same
+# reason; this daemon was missed.
+.venv/

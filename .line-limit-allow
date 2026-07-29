@@ -1,9 +1,27 @@
+# WARNING: `zig build lint -- --update` REWRITES THIS FILE AND DELETES EVERY COMMENT.
+#   It erased the notes below once on 2026-07-29 and they had to be recovered from
+#   git. Re-add rationale by hand after any --update, or edit the numbers directly.
+#
 # 2026-07-29, X-13: the implicit listener now binds loopback instead of 0.0.0.0.
-#   main.zig 661 -> 727. This daemon had NO configuration test at all, which is how
-#   an unauthenticated socket on every interface stayed the default; the growth is
-#   two tests (loopback default, explicit wide bind still honoured), the note that
-#   a Socket= host BORROWS from the parsed config and dangles if the config is freed
-#   first, and the reasoning for the default itself.
+#   This daemon had NO configuration test at all, which is how an unauthenticated
+#   socket on every interface stayed the default. A reachable port means an attacker
+#   supplies the client IP, HELO and MAIL FROM that check_host() runs on, and so
+#   chooses the SPF result this host stamps.
+#
+# 2026-07-29, test extraction DONE: main.zig 727 -> 672. The two listener tests
+#   moved to src/main_test.zig, along with the note that a Socket= host BORROWS from
+#   the parsed config and dangles if the config is freed first -- which is how the
+#   first version of the 0.0.0.0 test came to compare against freed memory.
+#   parseSpfConfig and SpfConfig were already pub, so nothing was exported to move a
+#   test.
+#
+#   STILL HERE ON PURPOSE: extractDomain and addArHeader are private, so their tests
+#   stay. Verified load-bearing: commenting the `_ = @import` reference drops the run
+#   from 50 to 48 tests.
+#
+#   STILL OVER GOAL AT 672, and the tests were only 55 lines of it. evaluate.zig at
+#   1120 is the bigger target in this daemon.
+#
 # Files currently over the 400-line goal, with the ceiling each
 # may not exceed. Ceilings tighten by themselves as files shrink; a
 # file that reaches the goal drops off this list entirely.
@@ -13,5 +31,5 @@
 # An empty list below means every file meets the goal.
 1120 src/evaluate.zig
 451 src/macro.zig
-727 src/main.zig
+672 src/main.zig
 776 src/spf.zig

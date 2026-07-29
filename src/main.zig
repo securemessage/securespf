@@ -626,6 +626,11 @@ test {
     _ = macro;
     _ = evaluate;
     _ = whitelist;
+
+    // An unreferenced @import is NOT analyzed, so its tests are silently absent
+    // and a test that never runs looks exactly like a test that passes. That is
+    // how msgfile.zig's three tests sat dormant in securearc (audit 11.29).
+    _ = @import("main_test.zig");
 }
 
 test "extract domain from mail from" {
@@ -633,66 +638,6 @@ test "extract domain from mail from" {
     try std.testing.expectEqualStrings("example.com", extractDomain("user@example.com"));
     try std.testing.expectEqualStrings("", extractDomain("<>"));
     try std.testing.expectEqualStrings("postmaster", extractDomain("postmaster"));
-}
-
-fn freeTestConfig(spf_cfg: SpfConfig) void {
-    std.testing.allocator.free(spf_cfg.listen_addresses);
-    std.testing.allocator.free(spf_cfg.dns_nameservers);
-}
-
-// Both tests below keep `cfg` alive across their assertions on purpose. An address
-// from a `Socket =` line BORROWS its host string from the parsed config, so a helper
-// that parses and deinits in one call hands back a dangling pointer -- which is
-// exactly how the first version of the 0.0.0.0 test failed, comparing against freed
-// memory. The loopback case masked it, because "127.0.0.1" is a literal in the
-// fallback and survives the free.
-
-// The implicit listener binds loopback, never 0.0.0.0.
-//
-// Until 2026-07-29 it bound 0.0.0.0 and nothing tested it -- this daemon had no
-// configuration test at all. The milter protocol authenticates nobody, so a
-// reachable port means an attacker supplies the client IP, HELO and MAIL FROM that
-// check_host() runs on, and therefore chooses the SPF result this host stamps.
-// Reachability IS authorization.
-test "the implicit listener binds loopback, not every interface" {
-    var cfg = try config_mod.parse(std.testing.allocator,
-        \\[global]
-        \\AuthservID = mail.test.com
-    );
-    defer cfg.deinit();
-
-    const spf_cfg = try parseSpfConfig(std.testing.allocator, &cfg);
-    defer freeTestConfig(spf_cfg);
-
-    try std.testing.expectEqual(@as(usize, 1), spf_cfg.listen_addresses.len);
-    switch (spf_cfg.listen_addresses[0]) {
-        .tcp => |tcp| {
-            try std.testing.expectEqualStrings("127.0.0.1", tcp.host);
-            try std.testing.expectEqual(@as(u16, 8890), tcp.port);
-        },
-        else => return error.TestUnexpectedResult,
-    }
-}
-
-// A safe default, not a policy override: an operator whose Postfix runs in another
-// jail must still be able to ask for a routable socket.
-test "an explicit 0.0.0.0 socket is still honoured" {
-    var cfg = try config_mod.parse(std.testing.allocator,
-        \\[global]
-        \\AuthservID = mail.test.com
-        \\
-        \\[listener:wide]
-        \\Socket = inet:8890@0.0.0.0
-    );
-    defer cfg.deinit();
-
-    const spf_cfg = try parseSpfConfig(std.testing.allocator, &cfg);
-    defer freeTestConfig(spf_cfg);
-
-    switch (spf_cfg.listen_addresses[0]) {
-        .tcp => |tcp| try std.testing.expectEqualStrings("0.0.0.0", tcp.host),
-        else => return error.TestUnexpectedResult,
-    }
 }
 
 // X-9: this wrapper must stay fallible.
