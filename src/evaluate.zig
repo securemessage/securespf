@@ -282,12 +282,61 @@ pub fn evaluate(
     return evaluateWithLimits(allocator, resolver, ctx, .{});
 }
 
+/// Room for the longest dotted-quad, "255.255.255.255".
+const ip4_text_max = 15;
+
+/// The embedded IPv4 address of an IPv4-mapped IPv6 address, in dotted-quad form.
+///
+/// Returns `null` for anything else, including the IPv4-*translated* prefix
+/// `::ffff:0:0:0/96` of RFC 2765, which looks similar and is a different thing.
+fn mappedIp4(ip: []const u8, buf: []u8) ?[]const u8 {
+    // Only an address written in IPv6 form can be mapped.
+    if (mem.indexOfScalar(u8, ip, ':') == null) return null;
+    const parsed = net.Ip6Address.parse(ip, 0) catch return null;
+    const octets = parsed.sa.addr;
+
+    // RFC 4291 §2.5.5.2: 80 zero bits, then 16 one bits, then the address.
+    if (!mem.allEqual(u8, octets[0..10], 0)) return null;
+    if (octets[10] != 0xFF or octets[11] != 0xFF) return null;
+
+    return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{
+        octets[12], octets[13], octets[14], octets[15],
+    }) catch null;
+}
+
 pub fn evaluateWithLimits(
     allocator: Allocator,
     resolver: *dns.Resolver,
-    ctx: *const EvalContext,
+    raw_ctx: *const EvalContext,
     limits: Limits,
 ) EvalResult {
+    // RFC 7208 §5: "IP4 mapped IP6 connections MUST be treated as IP4".
+    //
+    // Done once here rather than inside each mechanism, because the requirement
+    // is about the connection and so reaches everything downstream: `ip4:` has to
+    // compare against the embedded address, `ip6:` must not match at all, `a` and
+    // `mx` have to fetch A records rather than AAAA, an ip6-cidr-length stops
+    // applying, and `%{i}`/`%{v}` have to expand in their IPv4 forms. Patching
+    // the mechanisms individually would be the same one-rule-in-many-places
+    // mistake that produced D-1, A-5 and D-15.
+    //
+    // The buffer lives for the whole evaluation because every caller below
+    // borrows `client_ip` rather than copying it.
+    var mapped_buf: [ip4_text_max]u8 = undefined;
+    var normalized = raw_ctx.*;
+    if (raw_ctx.is_ipv6) {
+        if (mappedIp4(raw_ctx.client_ip, &mapped_buf)) |dotted| {
+            normalized.client_ip = dotted;
+            normalized.is_ipv6 = false;
+        }
+    }
+    // The parameter is the one with the awkward name so that `ctx` -- the name
+    // every line below reaches for by reflex -- is the corrected context. Zig
+    // cannot shadow a parameter, and an earlier draft of this function did leave
+    // one call site reading the un-normalized address, which silently undid the
+    // whole fix.
+    const ctx = &normalized;
+
     // Determine check domain: from MAIL FROM or fall back to HELO
     const domain = extractCheckDomain(ctx);
     if (domain.len == 0) {
