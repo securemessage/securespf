@@ -14,3 +14,9 @@ zig-cache/
 # megabytes and can hold key material lifted from process memory, so match the
 # pattern.
 *.core
+
+# Python bytecode from the RFC 7208 conformance harness. A .pyc was committed on
+# 2026-07-29 for want of this line -- same class as the *.core lapse: a build
+# artefact ignored by filename rather than by pattern.
+__pycache__/
+*.pyc
