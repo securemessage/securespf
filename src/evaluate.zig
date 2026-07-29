@@ -406,11 +406,13 @@ fn evaluateDomain(
     }
 
     // If no directive matched, check redirect modifier
-    if (record.redirect) |redirect_domain| {
+    if (record.redirect) |redirect_template| {
         try state.chargeTerm();
+        const target = try expandDomainSpec(allocator, ctx, domain, redirect_template);
+        defer allocator.free(target);
         // RFC 7208 §6.1: no record at the redirect target is a permerror, not a
         // `none` that would let the message through unjudged.
-        return evaluateDomain(allocator, resolver, ctx, redirect_domain, .directed, state);
+        return evaluateDomain(allocator, resolver, ctx, target, .directed, state);
     }
 
     // Default result when no directives match and no redirect: neutral
@@ -445,7 +447,7 @@ fn matchDirective(
         .ip6 => matchIp6(ctx, directive),
         .a => matchA(allocator, resolver, ctx, domain, directive, state),
         .mx => matchMx(allocator, resolver, ctx, domain, directive, state),
-        .include => matchInclude(allocator, resolver, ctx, directive, state),
+        .include => matchInclude(allocator, resolver, ctx, domain, directive, state),
         .exists => matchExists(allocator, resolver, directive, domain, ctx, state),
         .ptr => matchPtr(allocator, resolver, ctx, domain, directive, state),
     };
@@ -487,23 +489,25 @@ fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
     return true;
 }
 
-/// The name a mechanism's domain-spec refers to, with macros expanded.
+/// Expand a domain-spec against the evaluation context.
 ///
-/// One helper for every mechanism that takes a domain-spec, because `a`, `mx`,
-/// `ptr` and `exists` all expand the same grammar against the same context. Only
-/// `exists` used to do it, so `a:%{H}` queried the four literal characters of the
-/// macro and `mx:%{d}` the same -- the fourth time a single rule implemented in
-/// several places had diverged in only some of them, after D-1, A-5 and D-15.
+/// **Every** term carrying a domain-spec goes through here: `a`, `mx`, `ptr`,
+/// `exists`, `include` and `redirect`. Only `exists` used to expand, so the other
+/// five queried the macro's literal characters -- `a:%{H}` looked up the name
+/// "%{H}" and `redirect=%{d}.d.spf.example.com` the name "%{d}.d.spf.example.com".
+/// The name resolved was never the name the record named.
+///
+/// This is the fifth rule found implemented in several places and honoured in only
+/// some, after D-1, A-5, D-15 and the macro-less mechanisms above, which is why
+/// there is one function rather than six call sites.
 ///
 /// Caller owns the returned memory.
-fn expandTarget(
+fn expandDomainSpec(
     allocator: Allocator,
     ctx: *const EvalContext,
     domain: []const u8,
-    directive: spf.Directive,
+    template: []const u8,
 ) EvalError![]u8 {
-    const template = directive.argument orelse return allocator.dupe(u8, domain);
-
     const macro_ctx = macro.Context{
         .sender = ctx.sender,
         .domain = domain,
@@ -521,6 +525,18 @@ fn expandTarget(
         error.OutOfMemory => error.OutOfMemory,
         else => error.RecordSyntax,
     };
+}
+
+/// The name a mechanism's domain-spec refers to, defaulting to the current domain
+/// for the mechanisms whose argument is optional.
+fn expandTarget(
+    allocator: Allocator,
+    ctx: *const EvalContext,
+    domain: []const u8,
+    directive: spf.Directive,
+) EvalError![]u8 {
+    const template = directive.argument orelse return allocator.dupe(u8, domain);
+    return expandDomainSpec(allocator, ctx, domain, template);
 }
 
 fn matchA(
@@ -628,11 +644,17 @@ fn matchInclude(
     allocator: Allocator,
     resolver: *dns.Resolver,
     ctx: *const EvalContext,
+    domain: []const u8,
     directive: spf.Directive,
     state: *EvalState,
 ) EvalError!bool {
-    const target = directive.argument orelse return false;
+    const template = directive.argument orelse return false;
     try state.chargeTerm();
+
+    // Expanded against the domain whose record holds the include, not against the
+    // included one, so `%{d}` means what the author wrote it next to.
+    const target = try expandDomainSpec(allocator, ctx, domain, template);
+    defer allocator.free(target);
 
     const result = try evaluateDomain(allocator, resolver, ctx, target, .directed, state);
     return switch (result) {
