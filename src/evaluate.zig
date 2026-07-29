@@ -408,7 +408,7 @@ fn evaluateDomain(
     // If no directive matched, check redirect modifier
     if (record.redirect) |redirect_template| {
         try state.chargeTerm();
-        const target = try expandDomainSpec(allocator, ctx, domain, redirect_template);
+        const target = try expandDomainSpec(allocator, resolver, ctx, domain, redirect_template, state);
         defer allocator.free(target);
         // RFC 7208 §6.1: no record at the redirect target is a permerror, not a
         // `none` that would let the message through unjudged.
@@ -504,15 +504,27 @@ fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
 /// Caller owns the returned memory.
 fn expandDomainSpec(
     allocator: Allocator,
+    resolver: *dns.Resolver,
     ctx: *const EvalContext,
     domain: []const u8,
     template: []const u8,
+    state: *EvalState,
 ) EvalError![]u8 {
+    // `%{p}` costs a reverse lookup and a forward confirmation per candidate, so it
+    // is resolved only when a template actually asks for it. Everything else in the
+    // macro set is derived from the context we already hold.
+    var validated: ?[]u8 = null;
+    defer if (validated) |v| allocator.free(v);
+    if (usesValidatedDomain(template)) {
+        validated = try validatedDomain(allocator, resolver, ctx, domain, state);
+    }
+
     const macro_ctx = macro.Context{
         .sender = ctx.sender,
         .domain = domain,
         .client_ip = ctx.client_ip,
         .is_ipv6 = ctx.is_ipv6,
+        .validated_domain = validated orelse "unknown",
         .helo_domain = ctx.helo_domain,
         .receiver_host = ctx.receiver_host,
     };
@@ -527,16 +539,32 @@ fn expandDomainSpec(
     };
 }
 
+/// Whether a domain-spec uses the `%{p}` macro, in either case.
+fn usesValidatedDomain(template: []const u8) bool {
+    var i: usize = 0;
+    while (mem.indexOfScalarPos(u8, template, i, '%')) |at| {
+        if (at + 2 < template.len and template[at + 1] == '{' and
+            std.ascii.toLower(template[at + 2]) == 'p')
+        {
+            return true;
+        }
+        i = at + 1;
+    }
+    return false;
+}
+
 /// The name a mechanism's domain-spec refers to, defaulting to the current domain
 /// for the mechanisms whose argument is optional.
 fn expandTarget(
     allocator: Allocator,
+    resolver: *dns.Resolver,
     ctx: *const EvalContext,
     domain: []const u8,
     directive: spf.Directive,
+    state: *EvalState,
 ) EvalError![]u8 {
     const template = directive.argument orelse return allocator.dupe(u8, domain);
-    return expandDomainSpec(allocator, ctx, domain, template);
+    return expandDomainSpec(allocator, resolver, ctx, domain, template, state);
 }
 
 fn matchA(
@@ -548,7 +576,7 @@ fn matchA(
     state: *EvalState,
 ) EvalError!bool {
     try state.chargeTerm();
-    const target = try expandTarget(allocator, ctx, domain, directive);
+    const target = try expandTarget(allocator, resolver, ctx, domain, directive, state);
     defer allocator.free(target);
     const prefix4 = directive.cidr4 orelse 32;
     const prefix6 = directive.cidr6 orelse 128;
@@ -584,7 +612,7 @@ fn matchMx(
     state: *EvalState,
 ) EvalError!bool {
     try state.chargeTerm();
-    const target = try expandTarget(allocator, ctx, domain, directive);
+    const target = try expandTarget(allocator, resolver, ctx, domain, directive, state);
     defer allocator.free(target);
     const prefix4 = directive.cidr4 orelse 32;
     const prefix6 = directive.cidr6 orelse 128;
@@ -653,7 +681,7 @@ fn matchInclude(
 
     // Expanded against the domain whose record holds the include, not against the
     // included one, so `%{d}` means what the author wrote it next to.
-    const target = try expandDomainSpec(allocator, ctx, domain, template);
+    const target = try expandDomainSpec(allocator, resolver, ctx, domain, template, state);
     defer allocator.free(target);
 
     const result = try evaluateDomain(allocator, resolver, ctx, target, .directed, state);
@@ -679,7 +707,7 @@ fn matchExists(
 ) EvalError!bool {
     try state.chargeTerm();
 
-    const expanded = try expandTarget(allocator, ctx, domain, directive);
+    const expanded = try expandTarget(allocator, resolver, ctx, domain, directive, state);
     defer allocator.free(expanded);
 
     // exists: any A record is a match. RFC 7208 §5.7 specifies an A query even
@@ -712,6 +740,120 @@ fn reverseIp6Name(buf: []u8, octets: [16]u8) ?[]const u8 {
     return buf[0 .. len + suffix.len];
 }
 
+/// The validated domain names of the client address.
+const ValidatedNames = struct {
+    names: std.ArrayListUnmanaged([]u8) = .{},
+    allocator: Allocator,
+
+    fn deinit(self: *ValidatedNames) void {
+        for (self.names.items) |name| self.allocator.free(name);
+        self.names.deinit(self.allocator);
+    }
+};
+
+/// Collect the client address's validated domain names, per RFC 7208 §5.5.
+///
+/// A PTR name counts only once its forward lookup, in the address family the
+/// connection actually used, contains the connecting address. The reverse zone is
+/// controlled by whoever holds the address, so the PTR names are candidates and
+/// nothing more until confirmed -- skipping the confirmation would let an address
+/// owner claim any name.
+///
+/// §5.5 caps the names examined at 10, which is a budget separate from the term
+/// count: without it a reverse zone returning hundreds of names would buy hundreds
+/// of forward confirmations off a single mechanism.
+fn validatedNames(
+    allocator: Allocator,
+    resolver: *dns.Resolver,
+    ctx: *const EvalContext,
+    state: *EvalState,
+) EvalError!ValidatedNames {
+    var out = ValidatedNames{ .allocator = allocator };
+    errdefer out.deinit();
+
+    var client4: [4]u8 = undefined;
+    var client6: [16]u8 = undefined;
+    var ptr_buf: [80]u8 = undefined;
+    const ptr_name = if (ctx.is_ipv6) blk: {
+        client6 = spf.parseIp6Bytes(ctx.client_ip) catch return out;
+        break :blk reverseIp6Name(&ptr_buf, client6) orelse return out;
+    } else blk: {
+        client4 = spf.parseIp4Bytes(ctx.client_ip) catch return out;
+        break :blk std.fmt.bufPrint(&ptr_buf, "{d}.{d}.{d}.{d}.in-addr.arpa", .{
+            client4[3], client4[2], client4[1], client4[0],
+        }) catch return out;
+    };
+
+    var ptr_result = (try state.query(resolver, ptr_name, .PTR)) orelse return out;
+    defer ptr_result.deinit();
+
+    const fwd_type: dns.RecordType = if (ctx.is_ipv6) .AAAA else .A;
+    var records: usize = 0;
+
+    for (ptr_result.answers) |ans| {
+        if (ans.record_type != @intFromEnum(dns.RecordType.PTR)) continue;
+        const candidate = ans.data;
+
+        records += 1;
+        if (records > Limits.MAX_RECORDS_PER_MECHANISM) break;
+
+        var fwd_result = (try state.querySub(resolver, candidate, fwd_type)) orelse continue;
+        defer fwd_result.deinit();
+
+        for (fwd_result.answers) |fwd_ans| {
+            if (fwd_ans.record_type != @intFromEnum(fwd_type)) continue;
+            const matches = if (ctx.is_ipv6)
+                fwd_ans.data.len >= 16 and mem.eql(u8, fwd_ans.data[0..16], &client6)
+            else
+                fwd_ans.data.len >= 4 and mem.eql(u8, fwd_ans.data[0..4], &client4);
+            if (matches) {
+                try out.names.append(allocator, try allocator.dupe(u8, candidate));
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+/// The value of the `%{p}` macro.
+///
+/// RFC 7208 §7.2 builds it from the §5.5 validated names: prefer `domain` itself if
+/// it is among them, then a subdomain of `domain`, then any of them. With none, or
+/// on a DNS error, the value is the literal string "unknown".
+///
+/// §7.2 also says of this macro, in parentheses, "do not use". It costs a reverse
+/// lookup plus a forward confirmation per candidate, and the candidate list is
+/// chosen by whoever controls the reverse zone. It is implemented because a
+/// verifier does not get to ignore a macro a record actually uses.
+///
+/// Caller owns the returned memory.
+fn validatedDomain(
+    allocator: Allocator,
+    resolver: *dns.Resolver,
+    ctx: *const EvalContext,
+    domain: []const u8,
+    state: *EvalState,
+) EvalError![]u8 {
+    var validated = validatedNames(allocator, resolver, ctx, state) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // "If there are no validated domain names or if a DNS error occurs, the
+        // string 'unknown' is used" -- so a lookup failure here must not become the
+        // verdict for the whole evaluation.
+        else => return allocator.dupe(u8, "unknown"),
+    };
+    defer validated.deinit();
+
+    if (validated.names.items.len == 0) return allocator.dupe(u8, "unknown");
+
+    for (validated.names.items) |name| {
+        if (std.ascii.eqlIgnoreCase(name, domain)) return allocator.dupe(u8, name);
+    }
+    for (validated.names.items) |name| {
+        if (isSubdomainOf(name, domain)) return allocator.dupe(u8, name);
+    }
+    return allocator.dupe(u8, validated.names.items[0]);
+}
+
 fn matchPtr(
     allocator: Allocator,
     resolver: *dns.Resolver,
@@ -723,69 +865,17 @@ fn matchPtr(
     // RFC 7208 §5.5: ptr mechanism is NOT RECOMMENDED but MUST be implemented
     try state.chargeTerm();
 
-    const target_domain = try expandTarget(allocator, ctx, domain, directive);
+    const target_domain = try expandTarget(allocator, resolver, ctx, domain, directive, state);
     defer allocator.free(target_domain);
 
-    // §5.5 builds the reverse name under in-addr.arpa for an IPv4 connection and
-    // ip6.arpa for an IPv6 one, and confirms the forward lookup in the same family.
-    // Bailing out on IPv6, as this did, made `ptr` silently unmatchable for every
-    // IPv6 client rather than unimplemented -- a record of `v=spf1 ptr -all`
-    // rejected mail from exactly the hosts it meant to authorize.
-    var client4: [4]u8 = undefined;
-    var client6: [16]u8 = undefined;
-    var ptr_buf: [80]u8 = undefined;
-    const ptr_name = if (ctx.is_ipv6) blk: {
-        client6 = spf.parseIp6Bytes(ctx.client_ip) catch return false;
-        break :blk reverseIp6Name(&ptr_buf, client6) orelse return false;
-    } else blk: {
-        client4 = spf.parseIp4Bytes(ctx.client_ip) catch return false;
-        break :blk std.fmt.bufPrint(&ptr_buf, "{d}.{d}.{d}.{d}.in-addr.arpa", .{
-            client4[3], client4[2], client4[1], client4[0],
-        }) catch return false;
-    };
+    // §5.5: the mechanism matches when any *validated* name for the client address
+    // is the target domain or a subdomain of it. The validation itself is shared
+    // with the `%{p}` macro, which §7.2 defines in terms of this same procedure.
+    var validated = try validatedNames(allocator, resolver, ctx, state);
+    defer validated.deinit();
 
-    var ptr_result = (try state.query(resolver, ptr_name, .PTR)) orelse return false;
-    defer ptr_result.deinit();
-
-    // §5.5 also caps the PTR names examined at 10. Without it, a client whose
-    // reverse zone returns hundreds of names would buy hundreds of forward
-    // confirmations off a single mechanism.
-    var records: usize = 0;
-
-    // For each PTR name, verify it resolves back to client IP and
-    // check if it's a subdomain of the target_domain
-    for (ptr_result.answers) |ans| {
-        if (ans.record_type != @intFromEnum(dns.RecordType.PTR)) continue;
-        const validated_name = ans.data;
-
-        records += 1;
-        if (records > Limits.MAX_RECORDS_PER_MECHANISM) break;
-
-        // Confirm the forward lookup resolves back to the connecting address, in
-        // the family the connection actually used.
-        const fwd_type: dns.RecordType = if (ctx.is_ipv6) .AAAA else .A;
-        var fwd_result = (try state.querySub(resolver, validated_name, fwd_type)) orelse continue;
-        defer fwd_result.deinit();
-
-        var confirmed = false;
-        for (fwd_result.answers) |fwd_ans| {
-            if (fwd_ans.record_type != @intFromEnum(fwd_type)) continue;
-            if (ctx.is_ipv6) {
-                if (fwd_ans.data.len >= 16 and mem.eql(u8, fwd_ans.data[0..16], &client6)) {
-                    confirmed = true;
-                    break;
-                }
-            } else {
-                if (fwd_ans.data.len >= 4 and mem.eql(u8, fwd_ans.data[0..4], &client4)) {
-                    confirmed = true;
-                    break;
-                }
-            }
-        }
-
-        if (confirmed and isSubdomainOf(validated_name, target_domain)) {
-            return true;
-        }
+    for (validated.names.items) |name| {
+        if (isSubdomainOf(name, target_domain)) return true;
     }
     return false;
 }
