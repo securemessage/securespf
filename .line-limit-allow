@@ -1,6 +1,12 @@
-# WARNING: `zig build lint -- --update` REWRITES THIS FILE AND DELETES EVERY COMMENT.
-#   It erased the notes below once on 2026-07-29 and they had to be recovered from
-#   git. Re-add rationale by hand after any --update, or edit the numbers directly.
+# 2026-07-29, CORRECTED THEN FIXED: an earlier version of this warning said only
+#   `zig build lint -- --update` erased the comments here. That was too narrow. The
+#   ORDINARY gate run rewrote the file too, on its self-tightening path, so every
+#   note was one shrinking commit away from deletion -- including this one. Observed
+#   twice the same day and recovered from git both times.
+#
+#   Fixed at the source in securemilter-lib/tools/check-line-limit.sh: comment and
+#   blank lines above the generated header are now carried across a rewrite, verified
+#   idempotent over three consecutive rewrites. Rationale goes ABOVE that header.
 #
 # 2026-07-29, X-13: the implicit listener now binds loopback instead of 0.0.0.0.
 #   This daemon had NO configuration test at all, which is how an unauthenticated
