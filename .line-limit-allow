@@ -14,19 +14,23 @@
 #   supplies the client IP, HELO and MAIL FROM that check_host() runs on, and so
 #   chooses the SPF result this host stamps.
 #
-# 2026-07-29, test extraction DONE: main.zig 727 -> 672. The two listener tests
-#   moved to src/main_test.zig, along with the note that a Socket= host BORROWS from
-#   the parsed config and dangles if the config is freed first -- which is how the
-#   first version of the 0.0.0.0 test came to compare against freed memory.
-#   parseSpfConfig and SpfConfig were already pub, so nothing was exported to move a
-#   test.
+# 2026-07-29, REVERTED AND THE METRIC FIXED INSTEAD. Earlier the same day I moved two
+#   listener tests out of main.zig into a new src/main_test.zig and recorded 727 -> 672
+#   as a reduction. That was gaming the metric: the checker excluded *_test.zig FILES
+#   while counting test BLOCKS in the files it did check, so relocation changed the
+#   number and nothing else. main_test.zig is deleted and the tests are back beside the
+#   code they test, which is Zig's convention.
 #
-#   STILL HERE ON PURPOSE: extractDomain and addArHeader are private, so their tests
-#   stay. Verified load-bearing: commenting the `_ = @import` reference drops the run
-#   from 50 to 48 tests.
+#   THE COUNTER NOW MEASURES PRODUCTION LINES ONLY, in any file. Tests never count,
+#   wherever they live -- see securemilter-lib/tools/check-line-limit.sh.
 #
-#   STILL OVER GOAL AT 672, and the tests were only 55 lines of it. evaluate.zig at
-#   1120 is the bigger target in this daemon.
+#   659 is the production size, on the new basis. The old 672 and 727 measured
+#   something else. The note about a Socket= host BORROWING from the parsed config
+#   went back with the tests, since it explains why those two keep `cfg` alive --
+#   the first version of the 0.0.0.0 test compared against freed memory without it.
+#
+#   evaluate.zig is the real target in this daemon: 1120 total but 925 PRODUCTION,
+#   which is the largest single body of logic in the suite after securedkim's main.
 #
 # Files currently over the 400-line goal, with the ceiling each
 # may not exceed. Ceilings tighten by themselves as files shrink; a
@@ -35,7 +39,10 @@
 # Adding an entry by hand is how you knowingly accept a long file:
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
-1120 src/evaluate.zig
-451 src/macro.zig
-672 src/main.zig
-776 src/spf.zig
+#
+# WHY A CEILING EXISTS BELONGS ABOVE THIS HEADER. Comments there are
+# preserved when the list is rewritten; this header and the entries
+# under it are regenerated every time a ceiling moves.
+925 src/evaluate.zig
+659 src/main.zig
+695 src/spf.zig
