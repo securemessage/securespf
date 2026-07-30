@@ -11,7 +11,6 @@ const worker_mod = securemilter.worker;
 const daemon_mod = securemilter.daemon;
 const auth_stamp = securemilter.auth_stamp;
 const escape = securemilter.escape;
-const commands = securemilter.milter.commands;
 const codec = securemilter.milter.codec;
 const responses = securemilter.milter.responses;
 const negotiate = securemilter.milter.negotiate;
@@ -315,9 +314,6 @@ pub fn main() !void {
 
     // Spawn worker threads
     const callbacks = worker_mod.Callbacks{
-        .on_connect = onConnect,
-        .on_helo = onHelo,
-        .on_mail_from = onMailFrom,
         .on_eom = onEom,
         .on_reload = onWorkerReload,
         .required_actions = .{ .add_headers = true, .change_headers = true },
@@ -356,20 +352,10 @@ pub fn main() !void {
 // Milter Callbacks
 // =============================================================================
 
-fn onConnect(conn: *connection_mod.Connection, _: commands.ConnectInfo) u8 {
-    _ = conn;
-    return @intFromEnum(responses.Code.@"continue");
-}
-
-fn onHelo(conn: *connection_mod.Connection, _: []const u8) u8 {
-    _ = conn;
-    return @intFromEnum(responses.Code.@"continue");
-}
-
-fn onMailFrom(conn: *connection_mod.Connection, _: []const u8) u8 {
-    _ = conn;
-    return @intFromEnum(responses.Code.@"continue");
-}
+// Only the phases this daemon acts on are registered below. An unregistered
+// callback yields `Code.continue`, which is exactly what a stub returning
+// `continue` did, so connect/helo/mail-from are simply absent rather than
+// written out three times per daemon.
 
 fn onEom(conn: *connection_mod.Connection) u8 {
     const start_ns = std.time.nanoTimestamp();

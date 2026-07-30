@@ -44,5 +44,5 @@
 # preserved when the list is rewritten; this header and the entries
 # under it are regenerated every time a ceiling moves.
 925 src/evaluate.zig
-659 src/main.zig
+645 src/main.zig
 695 src/spf.zig
