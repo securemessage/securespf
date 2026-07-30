@@ -9,6 +9,7 @@ const listener_mod = securemilter.listener;
 const connection_mod = securemilter.connection;
 const worker_mod = securemilter.worker;
 const daemon_mod = securemilter.daemon;
+const bootstrap_mod = securemilter.bootstrap;
 const auth_stamp = securemilter.auth_stamp;
 const escape = securemilter.escape;
 const codec = securemilter.milter.codec;
@@ -78,6 +79,16 @@ var g_strip_policy: header_scrub.StripPolicy = .{ .own_methods = &.{"spf"} };
 var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
 var g_allocator: Allocator = undefined;
 var g_health_monitor: ?*dns_mod.HealthMonitor = null;
+
+/// `daemon.Options.spawn_threads`: start the DNS health monitor.
+///
+/// Reads `g_allocator` and `g_dns_config`, both set from the parsed configuration well
+/// before the bootstrap runs. Context-free because that is what `daemon.Options` takes,
+/// and deliberately so — the hook is called at the one point in the sequence where
+/// creating a thread is safe, and a parameter would invite calling it from elsewhere.
+fn spawnHealthMonitor() void {
+    g_health_monitor = dns_mod.startMonitor(g_allocator, g_dns_config.nameservers);
+}
 var g_eval_limits: evaluate.Limits = .{};
 
 // Global config generation counter — incremented on SIGHUP reload.
@@ -256,56 +267,21 @@ pub fn main() !void {
         }
     }
 
-    // Daemonize unless foreground mode
-    // MUST happen before spawning any threads (fork only preserves the calling thread)
-    if (!spf_cfg.foreground) {
-        daemon_mod.daemonize() catch |err| {
-            log.err("daemonize failed: {}", .{err});
-            return err;
-        };
-        // Re-init logger after fork (PID changed)
-        log.initThread();
-    }
-
-    // Block the managed signals BEFORE spawning any thread, so every thread
-    // inherits the mask and SIGHUP/SIGTERM can only be taken by sigwait in the
-    // main thread.
-    //
-    // This used to sit just above the worker pool, which is after the health
-    // monitor starts below. That left the monitor thread with SIGHUP unblocked,
-    // and a SIGHUP arriving while the main thread was inside reloadConfig() —
-    // and so not in sigwait() — was delivered there instead, terminating the
-    // daemon with no core and no log line (audit X-7).
-    daemon_mod.ManagedSignals.blockForKqueue();
-
-    // Start proactive DNS health monitor AFTER daemonize (threads don't survive fork)
-    if (dns_mod.HealthMonitor.init(allocator, spf_cfg.dns_nameservers, 53, 5, 2000)) |monitor| {
-        monitor.start() catch |err| {
-            log.warn("DNS health monitor thread failed: {}", .{err});
-        };
-        g_health_monitor = monitor;
-    } else |err| {
-        log.warn("DNS health monitor init failed: {}, falling back to reactive", .{err});
-    }
-
-    // Write PID file
-    daemon_mod.writePidFile(spf_cfg.pid_file) catch |err| {
-        log.err("pid file write failed: {}", .{err});
-    };
-    defer daemon_mod.removePidFile(spf_cfg.pid_file);
-
-    // Raise fd limit to calculated budget before dropping privileges
-    const num_workers = if (spf_cfg.worker_threads == 0) @as(u32, @intCast(std.Thread.getCpuCount() catch 4)) else spf_cfg.worker_threads;
-    const fd_need = daemon_mod.calculateFdNeed(num_workers, spf_cfg.max_connections, @intCast(spf_cfg.listen_addresses.len));
-    daemon_mod.raiseFileLimit(fd_need);
-
-    // Drop privileges after PID file is written, before workers spawn
-    if (spf_cfg.user) |user| {
-        daemon_mod.dropPrivileges(user) catch |err| {
-            log.err("privilege drop to '{s}' failed: {}", .{ user, err });
-            return err;
-        };
-    }
+    // Daemonize, block signals, start the monitor thread, claim the PID file, raise
+    // the fd budget, drop privileges — in that order, for reasons recorded once in
+    // `daemon.bootstrap` and enforced by its ordering tests. This was 40 lines here
+    // and in each of the other three daemons, with X-7's constraint restated as a
+    // comment in all four.
+    const boot = try bootstrap_mod.run(.{
+        .foreground = spf_cfg.foreground,
+        .pid_file = spf_cfg.pid_file,
+        .user = spf_cfg.user,
+        .worker_threads = spf_cfg.worker_threads,
+        .max_connections = spf_cfg.max_connections,
+        .num_listeners = @intCast(spf_cfg.listen_addresses.len),
+        .spawn_threads = spawnHealthMonitor,
+    });
+    defer boot.deinit();
 
     log.info("SecureSPF starting, AuthservID={s}, listeners={d}", .{
         spf_cfg.authserv_id,
