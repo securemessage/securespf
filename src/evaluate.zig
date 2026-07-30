@@ -160,6 +160,26 @@ fn errorToReason(err: EvalError) []const u8 {
 /// so the path is passed in rather than guessed at from the answer.
 const Arrival = enum { checked_domain, directed };
 
+/// The four values every mechanism needs, bound once for the whole evaluation.
+///
+/// Each `match*` used to take `(allocator, resolver, ctx, domain, directive, state)`.
+/// Six parameters, of which four never vary across a single `check_host()` — and
+/// `matchExists` listed those four in a **different order** from its five siblings,
+/// so the convention a reader relies on was already broken. The types differed
+/// enough that a swap would not compile, which is luck rather than a design.
+///
+/// Passed by value: it is four words, and every field is either a pointer or an
+/// allocator, so copying it copies no state. `state` stays a pointer because the term
+/// and void-lookup budgets must be shared across the whole recursive walk — an
+/// `include` that spent five lookups has to be visible to the caller that resumes
+/// after it.
+const Eval = struct {
+    allocator: Allocator,
+    resolver: *dns.Resolver,
+    ctx: *const EvalContext,
+    state: *EvalState,
+};
+
 /// Accounting for one evaluation.
 ///
 /// This was a bare `*usize` threaded through every mechanism, which put the
@@ -343,7 +363,19 @@ pub fn evaluateWithLimits(
     }
 
     var state = EvalState.init(limits);
-    const result = evaluateDomain(allocator, resolver, ctx, domain, .checked_domain, &state) catch |err| {
+
+    // The one place the four invariants exist as separate values. Everything below
+    // takes them as a unit, so `ctx` here is guaranteed to be the *normalized* one --
+    // the mistake the comment above describes cannot be made once per call site,
+    // because there is only one site.
+    const ev = Eval{
+        .allocator = allocator,
+        .resolver = resolver,
+        .ctx = ctx,
+        .state = &state,
+    };
+
+    const result = evaluateDomain(ev, domain, .checked_domain) catch |err| {
         // The top level is the only place an evaluation error becomes a result,
         // which keeps the mapping in one auditable spot.
         return .{
@@ -357,15 +389,8 @@ pub fn evaluateWithLimits(
 }
 
 /// Recursive SPF evaluation for a specific domain.
-fn evaluateDomain(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    arrival: Arrival,
-    state: *EvalState,
-) EvalError!spf.Result {
-    if (state.expired()) return error.Timeout;
+fn evaluateDomain(ev: Eval, domain: []const u8, arrival: Arrival) EvalError!spf.Result {
+    if (ev.state.expired()) return error.Timeout;
 
     // Fetch SPF record via DNS TXT lookup. The query for the checked domain is
     // not a "term" under §4.6.4 -- only the mechanisms are -- so it is
@@ -373,7 +398,7 @@ fn evaluateDomain(
     // subject to the deadline and still counts as a void lookup if it finds
     // nothing, because an `include` chain is exactly how that query gets
     // amplified.
-    const maybe = try state.query(resolver, domain, .TXT);
+    const maybe = try ev.state.query(ev.resolver, domain, .TXT);
     if (maybe == null) return noRecord(arrival);
     var dns_result = maybe.?;
     defer dns_result.deinit();
@@ -392,27 +417,27 @@ fn evaluateDomain(
     const record_txt = spf_txt orelse return noRecord(arrival);
 
     // Parse the SPF record
-    var record = spf.parseRecord(allocator, record_txt) catch |err| return switch (err) {
+    var record = spf.parseRecord(ev.allocator, record_txt) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.RecordSyntax,
     };
-    defer record.deinit(allocator);
+    defer record.deinit(ev.allocator);
 
     // Walk directives
     for (record.directives.items) |directive| {
-        if (try matchDirective(allocator, resolver, ctx, domain, directive, state)) {
+        if (try matchDirective(ev, domain, directive)) {
             return directive.qualifier.toResult();
         }
     }
 
     // If no directive matched, check redirect modifier
     if (record.redirect) |redirect_template| {
-        try state.chargeTerm();
-        const target = try expandDomainSpec(allocator, resolver, ctx, domain, redirect_template, state);
-        defer allocator.free(target);
+        try ev.state.chargeTerm();
+        const target = try expandDomainSpec(ev, domain, redirect_template);
+        defer ev.allocator.free(target);
         // RFC 7208 §6.1: no record at the redirect target is a permerror, not a
         // `none` that would let the message through unjudged.
-        return evaluateDomain(allocator, resolver, ctx, target, .directed, state);
+        return evaluateDomain(ev, target, .directed);
     }
 
     // Default result when no directives match and no redirect: neutral
@@ -433,23 +458,16 @@ fn noRecord(arrival: Arrival) EvalError!spf.Result {
 }
 
 /// Check if a single directive matches the client.
-fn matchDirective(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    directive: spf.Directive,
-    state: *EvalState,
-) EvalError!bool {
+fn matchDirective(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
     return switch (directive.mechanism) {
         .all => true,
-        .ip4 => matchIp4(ctx, directive),
-        .ip6 => matchIp6(ctx, directive),
-        .a => matchA(allocator, resolver, ctx, domain, directive, state),
-        .mx => matchMx(allocator, resolver, ctx, domain, directive, state),
-        .include => matchInclude(allocator, resolver, ctx, domain, directive, state),
-        .exists => matchExists(allocator, resolver, directive, domain, ctx, state),
-        .ptr => matchPtr(allocator, resolver, ctx, domain, directive, state),
+        .ip4 => matchIp4(ev.ctx, directive),
+        .ip6 => matchIp6(ev.ctx, directive),
+        .a => matchA(ev, domain, directive),
+        .mx => matchMx(ev, domain, directive),
+        .include => matchInclude(ev, domain, directive),
+        .exists => matchExists(ev, domain, directive),
+        .ptr => matchPtr(ev, domain, directive),
     };
 }
 
@@ -502,38 +520,31 @@ fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
 /// there is one function rather than six call sites.
 ///
 /// Caller owns the returned memory.
-fn expandDomainSpec(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    template: []const u8,
-    state: *EvalState,
-) EvalError![]u8 {
+fn expandDomainSpec(ev: Eval, domain: []const u8, template: []const u8) EvalError![]u8 {
     // `%{p}` costs a reverse lookup and a forward confirmation per candidate, so it
     // is resolved only when a template actually asks for it. Everything else in the
     // macro set is derived from the context we already hold.
     var validated: ?[]u8 = null;
-    defer if (validated) |v| allocator.free(v);
+    defer if (validated) |v| ev.allocator.free(v);
     if (usesValidatedDomain(template)) {
-        validated = try validatedDomain(allocator, resolver, ctx, domain, state);
+        validated = try validatedDomain(ev, domain);
     }
 
     const macro_ctx = macro.Context{
-        .sender = ctx.sender,
+        .sender = ev.ctx.sender,
         .domain = domain,
-        .client_ip = ctx.client_ip,
-        .is_ipv6 = ctx.is_ipv6,
+        .client_ip = ev.ctx.client_ip,
+        .is_ipv6 = ev.ctx.is_ipv6,
         .validated_domain = validated orelse "unknown",
-        .helo_domain = ctx.helo_domain,
-        .receiver_host = ctx.receiver_host,
+        .helo_domain = ev.ctx.helo_domain,
+        .receiver_host = ev.ctx.receiver_host,
     };
 
     // A macro that will not expand is a defect in the record, and §4.6 makes a
     // syntax defect a permerror. Reporting "did not match" instead carries the
     // evaluation on to the record's own `-all` and rejects the mail on the
     // strength of a term that was never evaluated.
-    return macro.expand(allocator, template, &macro_ctx) catch |err| switch (err) {
+    return macro.expand(ev.allocator, template, &macro_ctx) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.RecordSyntax,
     };
@@ -555,45 +566,31 @@ fn usesValidatedDomain(template: []const u8) bool {
 
 /// The name a mechanism's domain-spec refers to, defaulting to the current domain
 /// for the mechanisms whose argument is optional.
-fn expandTarget(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    directive: spf.Directive,
-    state: *EvalState,
-) EvalError![]u8 {
-    const template = directive.argument orelse return allocator.dupe(u8, domain);
-    return expandDomainSpec(allocator, resolver, ctx, domain, template, state);
+fn expandTarget(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError![]u8 {
+    const template = directive.argument orelse return ev.allocator.dupe(u8, domain);
+    return expandDomainSpec(ev, domain, template);
 }
 
-fn matchA(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    directive: spf.Directive,
-    state: *EvalState,
-) EvalError!bool {
-    try state.chargeTerm();
-    const target = try expandTarget(allocator, resolver, ctx, domain, directive, state);
-    defer allocator.free(target);
+fn matchA(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
+    try ev.state.chargeTerm();
+    const target = try expandTarget(ev, domain, directive);
+    defer ev.allocator.free(target);
     const prefix4 = directive.cidr4 orelse 32;
     const prefix6 = directive.cidr6 orelse 128;
 
-    const rtype: dns.RecordType = if (ctx.is_ipv6) .AAAA else .A;
-    var result = (try state.query(resolver, target, rtype)) orelse return false;
+    const rtype: dns.RecordType = if (ev.ctx.is_ipv6) .AAAA else .A;
+    var result = (try ev.state.query(ev.resolver, target, rtype)) orelse return false;
     defer result.deinit();
 
-    if (!ctx.is_ipv6) {
-        const client_bytes = spf.parseIp4Bytes(ctx.client_ip) catch return false;
+    if (!ev.ctx.is_ipv6) {
+        const client_bytes = spf.parseIp4Bytes(ev.ctx.client_ip) catch return false;
         for (result.answers) |ans| {
             if (ans.record_type == @intFromEnum(dns.RecordType.A) and ans.data.len >= 4) {
                 if (spf.matchIp4Cidr(client_bytes, ans.data[0..4].*, prefix4)) return true;
             }
         }
     } else {
-        const client = spf.parseIp6Bytes(ctx.client_ip) catch return false;
+        const client = spf.parseIp6Bytes(ev.ctx.client_ip) catch return false;
         for (result.answers) |ans| {
             if (ans.record_type == @intFromEnum(dns.RecordType.AAAA) and ans.data.len >= 16) {
                 if (matchIp6Cidr(client, ans.data[0..16].*, prefix6)) return true;
@@ -603,24 +600,17 @@ fn matchA(
     return false;
 }
 
-fn matchMx(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    directive: spf.Directive,
-    state: *EvalState,
-) EvalError!bool {
-    try state.chargeTerm();
-    const target = try expandTarget(allocator, resolver, ctx, domain, directive, state);
-    defer allocator.free(target);
+fn matchMx(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
+    try ev.state.chargeTerm();
+    const target = try expandTarget(ev, domain, directive);
+    defer ev.allocator.free(target);
     const prefix4 = directive.cidr4 orelse 32;
     const prefix6 = directive.cidr6 orelse 128;
 
-    var mx_result = (try state.query(resolver, target, .MX)) orelse return false;
+    var mx_result = (try ev.state.query(ev.resolver, target, .MX)) orelse return false;
     defer mx_result.deinit();
 
-    const rtype: dns.RecordType = if (ctx.is_ipv6) .AAAA else .A;
+    const rtype: dns.RecordType = if (ev.ctx.is_ipv6) .AAAA else .A;
 
     // RFC 7208 §4.6.4 caps the records examined *inside* one `mx` at 10, as a
     // separate budget from the 10 terms. The previous code charged each MX host
@@ -639,18 +629,18 @@ fn matchMx(
             return error.MechanismRecordLimitExceeded;
         }
 
-        var addr_result = (try state.querySub(resolver, mx_host, rtype)) orelse continue;
+        var addr_result = (try ev.state.querySub(ev.resolver, mx_host, rtype)) orelse continue;
         defer addr_result.deinit();
 
-        if (!ctx.is_ipv6) {
-            const client_bytes = spf.parseIp4Bytes(ctx.client_ip) catch return false;
+        if (!ev.ctx.is_ipv6) {
+            const client_bytes = spf.parseIp4Bytes(ev.ctx.client_ip) catch return false;
             for (addr_result.answers) |a_ans| {
                 if (a_ans.record_type == @intFromEnum(dns.RecordType.A) and a_ans.data.len >= 4) {
                     if (spf.matchIp4Cidr(client_bytes, a_ans.data[0..4].*, prefix4)) return true;
                 }
             }
         } else {
-            const client = spf.parseIp6Bytes(ctx.client_ip) catch return false;
+            const client = spf.parseIp6Bytes(ev.ctx.client_ip) catch return false;
             for (addr_result.answers) |a_ans| {
                 if (a_ans.record_type == @intFromEnum(dns.RecordType.AAAA) and a_ans.data.len >= 16) {
                     if (matchIp6Cidr(client, a_ans.data[0..16].*, prefix6)) return true;
@@ -668,23 +658,16 @@ fn matchMx(
 /// no usable record is a permerror. Collapsing all of that to `result == .pass`
 /// meant an outage at an included provider read as "did not match", so the
 /// evaluation walked on to the sender's own `-all` and rejected the mail.
-fn matchInclude(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    directive: spf.Directive,
-    state: *EvalState,
-) EvalError!bool {
+fn matchInclude(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
     const template = directive.argument orelse return false;
-    try state.chargeTerm();
+    try ev.state.chargeTerm();
 
     // Expanded against the domain whose record holds the include, not against the
     // included one, so `%{d}` means what the author wrote it next to.
-    const target = try expandDomainSpec(allocator, resolver, ctx, domain, template, state);
-    defer allocator.free(target);
+    const target = try expandDomainSpec(ev, domain, template);
+    defer ev.allocator.free(target);
 
-    const result = try evaluateDomain(allocator, resolver, ctx, target, .directed, state);
+    const result = try evaluateDomain(ev, target, .directed);
     return switch (result) {
         .pass => true,
         .fail, .softfail, .neutral => false,
@@ -697,22 +680,15 @@ fn matchInclude(
     };
 }
 
-fn matchExists(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    directive: spf.Directive,
-    domain: []const u8,
-    ctx: *const EvalContext,
-    state: *EvalState,
-) EvalError!bool {
-    try state.chargeTerm();
+fn matchExists(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
+    try ev.state.chargeTerm();
 
-    const expanded = try expandTarget(allocator, resolver, ctx, domain, directive, state);
-    defer allocator.free(expanded);
+    const expanded = try expandTarget(ev, domain, directive);
+    defer ev.allocator.free(expanded);
 
     // exists: any A record is a match. RFC 7208 §5.7 specifies an A query even
     // when the client is IPv6, which is why this does not branch on is_ipv6.
-    var result = (try state.query(resolver, expanded, .A)) orelse return false;
+    var result = (try ev.state.query(ev.resolver, expanded, .A)) orelse return false;
     result.deinit();
     return true;
 }
@@ -762,32 +738,27 @@ const ValidatedNames = struct {
 /// §5.5 caps the names examined at 10, which is a budget separate from the term
 /// count: without it a reverse zone returning hundreds of names would buy hundreds
 /// of forward confirmations off a single mechanism.
-fn validatedNames(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    state: *EvalState,
-) EvalError!ValidatedNames {
-    var out = ValidatedNames{ .allocator = allocator };
+fn validatedNames(ev: Eval) EvalError!ValidatedNames {
+    var out = ValidatedNames{ .allocator = ev.allocator };
     errdefer out.deinit();
 
     var client4: [4]u8 = undefined;
     var client6: [16]u8 = undefined;
     var ptr_buf: [80]u8 = undefined;
-    const ptr_name = if (ctx.is_ipv6) blk: {
-        client6 = spf.parseIp6Bytes(ctx.client_ip) catch return out;
+    const ptr_name = if (ev.ctx.is_ipv6) blk: {
+        client6 = spf.parseIp6Bytes(ev.ctx.client_ip) catch return out;
         break :blk reverseIp6Name(&ptr_buf, client6) orelse return out;
     } else blk: {
-        client4 = spf.parseIp4Bytes(ctx.client_ip) catch return out;
+        client4 = spf.parseIp4Bytes(ev.ctx.client_ip) catch return out;
         break :blk std.fmt.bufPrint(&ptr_buf, "{d}.{d}.{d}.{d}.in-addr.arpa", .{
             client4[3], client4[2], client4[1], client4[0],
         }) catch return out;
     };
 
-    var ptr_result = (try state.query(resolver, ptr_name, .PTR)) orelse return out;
+    var ptr_result = (try ev.state.query(ev.resolver, ptr_name, .PTR)) orelse return out;
     defer ptr_result.deinit();
 
-    const fwd_type: dns.RecordType = if (ctx.is_ipv6) .AAAA else .A;
+    const fwd_type: dns.RecordType = if (ev.ctx.is_ipv6) .AAAA else .A;
     var records: usize = 0;
 
     for (ptr_result.answers) |ans| {
@@ -797,17 +768,17 @@ fn validatedNames(
         records += 1;
         if (records > Limits.MAX_RECORDS_PER_MECHANISM) break;
 
-        var fwd_result = (try state.querySub(resolver, candidate, fwd_type)) orelse continue;
+        var fwd_result = (try ev.state.querySub(ev.resolver, candidate, fwd_type)) orelse continue;
         defer fwd_result.deinit();
 
         for (fwd_result.answers) |fwd_ans| {
             if (fwd_ans.record_type != @intFromEnum(fwd_type)) continue;
-            const matches = if (ctx.is_ipv6)
+            const matches = if (ev.ctx.is_ipv6)
                 fwd_ans.data.len >= 16 and mem.eql(u8, fwd_ans.data[0..16], &client6)
             else
                 fwd_ans.data.len >= 4 and mem.eql(u8, fwd_ans.data[0..4], &client4);
             if (matches) {
-                try out.names.append(allocator, try allocator.dupe(u8, candidate));
+                try out.names.append(ev.allocator, try ev.allocator.dupe(u8, candidate));
                 break;
             }
         }
@@ -827,51 +798,38 @@ fn validatedNames(
 /// verifier does not get to ignore a macro a record actually uses.
 ///
 /// Caller owns the returned memory.
-fn validatedDomain(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    state: *EvalState,
-) EvalError![]u8 {
-    var validated = validatedNames(allocator, resolver, ctx, state) catch |err| switch (err) {
+fn validatedDomain(ev: Eval, domain: []const u8) EvalError![]u8 {
+    var validated = validatedNames(ev) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // "If there are no validated domain names or if a DNS error occurs, the
         // string 'unknown' is used" -- so a lookup failure here must not become the
         // verdict for the whole evaluation.
-        else => return allocator.dupe(u8, "unknown"),
+        else => return ev.allocator.dupe(u8, "unknown"),
     };
     defer validated.deinit();
 
-    if (validated.names.items.len == 0) return allocator.dupe(u8, "unknown");
+    if (validated.names.items.len == 0) return ev.allocator.dupe(u8, "unknown");
 
     for (validated.names.items) |name| {
-        if (std.ascii.eqlIgnoreCase(name, domain)) return allocator.dupe(u8, name);
+        if (std.ascii.eqlIgnoreCase(name, domain)) return ev.allocator.dupe(u8, name);
     }
     for (validated.names.items) |name| {
-        if (isSubdomainOf(name, domain)) return allocator.dupe(u8, name);
+        if (isSubdomainOf(name, domain)) return ev.allocator.dupe(u8, name);
     }
-    return allocator.dupe(u8, validated.names.items[0]);
+    return ev.allocator.dupe(u8, validated.names.items[0]);
 }
 
-fn matchPtr(
-    allocator: Allocator,
-    resolver: *dns.Resolver,
-    ctx: *const EvalContext,
-    domain: []const u8,
-    directive: spf.Directive,
-    state: *EvalState,
-) EvalError!bool {
+fn matchPtr(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
     // RFC 7208 §5.5: ptr mechanism is NOT RECOMMENDED but MUST be implemented
-    try state.chargeTerm();
+    try ev.state.chargeTerm();
 
-    const target_domain = try expandTarget(allocator, resolver, ctx, domain, directive, state);
-    defer allocator.free(target_domain);
+    const target_domain = try expandTarget(ev, domain, directive);
+    defer ev.allocator.free(target_domain);
 
     // §5.5: the mechanism matches when any *validated* name for the client address
     // is the target domain or a subdomain of it. The validation itself is shared
     // with the `%{p}` macro, which §7.2 defines in terms of this same procedure.
-    var validated = try validatedNames(allocator, resolver, ctx, state);
+    var validated = try validatedNames(ev);
     defer validated.deinit();
 
     for (validated.names.items) |name| {

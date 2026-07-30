@@ -43,6 +43,6 @@
 # WHY A CEILING EXISTS BELONGS ABOVE THIS HEADER. Comments there are
 # preserved when the list is rewritten; this header and the entries
 # under it are regenerated every time a ceiling moves.
-925 src/evaluate.zig
+883 src/evaluate.zig
 645 src/main.zig
 695 src/spf.zig
