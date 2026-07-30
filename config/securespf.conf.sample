@@ -88,6 +88,10 @@ DnsRetries      = 2
 # on -- it chooses the SPF result this host will stamp. Widen only if Postfix
 # genuinely runs on another machine, and then restrict it with pf.
 [listener:inbound]
+# The address must be numeric: no DNS is performed, so inet:PORT@localhost is a
+# configuration ERROR, not a synonym for 127.0.0.1. A Socket value that cannot be
+# parsed stops startup and names this section (X-14); it is never silently ignored
+# and never falls back to the default listener.
 Socket          = inet:8890@127.0.0.1
 
 # Optional: hosts/networks that bypass SPF checking.

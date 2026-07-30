@@ -191,10 +191,16 @@ section defines a socket to listen on.
 .It Cm Socket
 Listen address.
 Format:
-.Dq inet:port@host
+.Dq inet:port@ip
 for TCP or
 .Dq unix:/path/to/socket
 for Unix domain sockets.
+The
+.Ar ip
+must be a numeric IPv4 or IPv6 address; no name resolution is performed.
+A value that cannot be parsed is a fatal configuration error and is reported
+with the section that contains it \(em it is never ignored, and never falls
+back to the default listener.
 .El
 .Pp
 If no listener sections are defined, the default is

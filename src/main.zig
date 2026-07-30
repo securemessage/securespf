@@ -121,8 +121,9 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     for (cfg.section_order.items) |section_name| {
         if (mem.startsWith(u8, section_name, "listener:")) {
             const section = cfg.getSection(section_name) orelse continue;
-            const socket_str = section.get("Socket") orelse continue;
-            const addr = listener_mod.ListenAddress.parse(socket_str) catch continue;
+
+            // X-14: a malformed or missing Socket is refused, not skipped.
+            const addr = try listener_mod.parseListenerSocket(section_name, section.get("Socket"));
             try addrs.append(allocator, addr);
         }
     }
@@ -655,6 +656,55 @@ test "an explicit 0.0.0.0 socket is still honoured" {
         .tcp => |tcp| try std.testing.expectEqualStrings("0.0.0.0", tcp.host),
         else => return error.TestUnexpectedResult,
     }
+}
+
+// X-14. The pair of assertions that matter here are "it is an error" and
+// "the fallback did NOT fire". The second is the dangerous half: a silently
+// skipped listener left `addrs` empty, so the loopback default above took its
+// place and the daemon listened somewhere the operator never asked for while
+// reporting a successful start.
+test "a malformed listener Socket is refused, not replaced by the default" {
+    var cfg = try config_mod.parse(std.testing.allocator,
+        \\[global]
+        \\AuthservID = mail.test.com
+        \\
+        \\[listener:typo]
+        \\Socket = inet6:8890@::1
+    );
+    defer cfg.deinit();
+
+    try std.testing.expectError(error.InvalidListenerSocket, parseSpfConfig(std.testing.allocator, &cfg));
+}
+
+// A hostname is the likeliest form of this mistake, and it used to parse
+// cleanly and fail later inside a worker thread, where the only response
+// available was to log and let that thread die.
+test "a hostname in Socket is refused at config time" {
+    var cfg = try config_mod.parse(std.testing.allocator,
+        \\[global]
+        \\AuthservID = mail.test.com
+        \\
+        \\[listener:main]
+        \\Socket = inet:8890@localhost
+    );
+    defer cfg.deinit();
+
+    try std.testing.expectError(error.InvalidListenerSocket, parseSpfConfig(std.testing.allocator, &cfg));
+}
+
+// A `[listener:*]` section that names no address is self-contradictory. Kept
+// distinct from the absent-section case, which still gets the documented default.
+test "a listener section with no Socket is refused" {
+    var cfg = try config_mod.parse(std.testing.allocator,
+        \\[global]
+        \\AuthservID = mail.test.com
+        \\
+        \\[listener:empty]
+        \\MaxConnections = 10
+    );
+    defer cfg.deinit();
+
+    try std.testing.expectError(error.MissingListenerSocket, parseSpfConfig(std.testing.allocator, &cfg));
 }
 
 // X-9: this wrapper must stay fallible.
