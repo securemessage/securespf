@@ -48,6 +48,11 @@
 #   evaluate.zig is the real target in this daemon: 1120 total but 925 PRODUCTION,
 #   which is the largest single body of logic in the suite after securedkim's main.
 #
+# WRITE THE REASON FOR A CEILING ABOVE THIS LINE.
+#
+# From here down is regenerated whenever a ceiling moves. A comment
+# above that line is preserved; one below it is reported and then lost.
+#
 # Files currently over the 400-line goal, with the ceiling each
 # may not exceed. Ceilings tighten by themselves as files shrink; a
 # file that reaches the goal drops off this list entirely.
@@ -55,10 +60,6 @@
 # Adding an entry by hand is how you knowingly accept a long file:
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
-#
-# WHY A CEILING EXISTS BELONGS ABOVE THIS HEADER. Comments there are
-# preserved when the list is rewritten; this header and the entries
-# under it are regenerated every time a ceiling moves.
 861 src/evaluate.zig
 586 src/main.zig
 685 src/spf.zig
