@@ -4,18 +4,11 @@ const posix = std.posix;
 const process = std.process;
 
 const securemilter = @import("securemilter");
+const cli = securemilter.cli.Tool("securespf-check");
 const dns_mod = securemilter.dns;
 
 const spf = @import("spf.zig");
 const evaluate = @import("evaluate.zig");
-
-fn writeOut(data: []const u8) void {
-    _ = posix.write(posix.STDOUT_FILENO, data) catch {};
-}
-
-fn writeErr(data: []const u8) void {
-    _ = posix.write(posix.STDERR_FILENO, data) catch {};
-}
 
 const Usage =
     \\Usage: securespf-check [options]
@@ -57,26 +50,26 @@ pub fn main() !void {
 
     while (args.next()) |arg| {
         if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "--help")) {
-            writeOut(Usage);
+            cli.out(Usage);
             return;
         } else if (mem.eql(u8, arg, "-i")) {
-            client_ip = args.next() orelse return fatal("missing argument for -i");
+            client_ip = args.next() orelse return cli.fatal("missing argument for -i");
         } else if (mem.eql(u8, arg, "-s")) {
-            sender = args.next() orelse return fatal("missing argument for -s");
+            sender = args.next() orelse return cli.fatal("missing argument for -s");
         } else if (mem.eql(u8, arg, "-e")) {
-            helo = args.next() orelse return fatal("missing argument for -e");
+            helo = args.next() orelse return cli.fatal("missing argument for -e");
         } else if (mem.eql(u8, arg, "-n")) {
-            nameserver = args.next() orelse return fatal("missing argument for -n");
+            nameserver = args.next() orelse return cli.fatal("missing argument for -n");
         } else if (mem.eql(u8, arg, "-p")) {
-            const raw = args.next() orelse return fatal("missing argument for -p");
-            port = std.fmt.parseInt(u16, raw, 10) catch return fatal("-p must be a port number");
+            const raw = args.next() orelse return cli.fatal("missing argument for -p");
+            port = std.fmt.parseInt(u16, raw, 10) catch return cli.fatal("-p must be a port number");
         } else {
-            return fatal("unknown option (use -h for help)");
+            return cli.fatal("unknown option (use -h for help)");
         }
     }
 
-    const ip = client_ip orelse return fatal("-i <ip> is required");
-    const snd = sender orelse return fatal("-s <sender> is required");
+    const ip = client_ip orelse return cli.fatal("-i <ip> is required");
+    const snd = sender orelse return cli.fatal("-s <sender> is required");
 
     // Extract domain from sender for default HELO
     const sender_domain = extractDomain(snd);
@@ -117,8 +110,8 @@ pub fn main() !void {
         \\  sender: {s}
         \\  helo: {s}
         \\
-    , .{ result_str, domain, ip, snd, helo_domain }) catch return fatal("output format error");
-    writeOut(line);
+    , .{ result_str, domain, ip, snd, helo_domain }) catch return cli.fatal("output format error");
+    cli.out(line);
 
     // Exit non-zero on definitive failure
     switch (result.result) {
@@ -144,11 +137,4 @@ fn resultToString(result: spf.Result) []const u8 {
         .temperror => "temperror",
         .permerror => "permerror",
     };
-}
-
-fn fatal(msg: []const u8) noreturn {
-    writeErr("error: ");
-    writeErr(msg);
-    writeErr("\n");
-    process.exit(1);
 }
