@@ -279,7 +279,7 @@ fn runDaemon() !void {
     // `daemon.bootstrap` and enforced by its ordering tests. This was 40 lines here
     // and in each of the other three daemons, with X-7's constraint restated as a
     // comment in all four.
-    const boot = try bootstrap_mod.run(.{
+    var boot = try bootstrap_mod.run(.{
         .foreground = spf_cfg.foreground,
         .pid_file = spf_cfg.pid_file,
         .user = spf_cfg.user,
@@ -318,6 +318,9 @@ fn runDaemon() !void {
         spf_cfg.max_connections,
     );
     defer threads.deinit(allocator);
+
+    // Bound and serving: release the parent blocked in `daemonize` (X-16).
+    boot.notifyReady();
 
     // Main thread: signal loop handles SIGHUP (reload) and SIGTERM (shutdown)
     daemon_mod.ManagedSignals.signalLoop(shutdown_pipe[1], reloadConfig);
