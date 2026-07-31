@@ -322,7 +322,9 @@ fn runDaemon() !void {
         .on_eom = onEom,
         .on_reload = onWorkerReload,
         .required_actions = .{ .add_headers = true, .change_headers = true },
-        .skip_flags = .{ .no_body = true }, // SPF doesn't need message body
+        // SPF needs no body, and no `header_leading_space` (D-23): this daemon
+        // never rebuilds a header field to hash it.
+        .protocol_flags = .{ .no_body = true },
         .limits = spf_cfg.limits,
     };
 

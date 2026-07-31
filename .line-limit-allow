@@ -96,6 +96,19 @@
 #   NOT PAID DOWN HERE ON PURPOSE, same as the X-16(b) note above: these files are the
 #   roadmap's settings.zig extraction target and should be cut there, not nibbled here.
 
+# 2026-07-31, D-23: main.zig 625 -> 627, +2, and both lines are a comment.
+#
+#   The `skip_flags` callback field was renamed `protocol_flags` -- D-23 added
+#   `header_leading_space`, the first flag that asks the MTA for MORE data rather
+#   than less, so a field named for skipping had started saying the opposite of
+#   what it did. This daemon is the only one that sets it, for `no_body`.
+#
+#   The two lines record that securespf deliberately does NOT ask for the new
+#   flag: it never rebuilds a header field to hash one, so the separator is
+#   information it has no use for. Worth the lines. Without them the next reader
+#   finds two daemons requesting a flag and two not, and no statement of which
+#   is the considered case.
+#
 # WRITE THE REASON FOR A CEILING ABOVE THIS LINE.
 #
 # From here down is regenerated whenever a ceiling moves. A comment
@@ -109,5 +122,5 @@
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
 861 src/evaluate.zig
-625 src/main.zig
+627 src/main.zig
 685 src/spf.zig
