@@ -97,6 +97,28 @@ var g_config_gen: reload_mod.ConfigGeneration = reload_mod.ConfigGeneration.init
 // Thread-local ZMQ publisher (one socket per worker thread — ZMQ thread-safety)
 threadlocal var tl_publisher: ?zmq.Publisher = null;
 
+// Thread-local DNS resolver (audit X-3).
+//
+// One SPF evaluation costs up to `Limits.max_dns_lookups` queries, and the names
+// it asks for repeat heavily across messages: the same sending domains, the same
+// `include:` targets, the same `redirect=`. Building the resolver per message
+// threw its TTL cache away every time, so every one of those queries was a cold
+// round trip. The negative cache mattered more still -- it exists so an
+// NXDOMAIN flood is answered from memory, and a cache that never outlives one
+// message cannot do that.
+//
+// Per worker thread so it needs no lock, matching the publisher above.
+// `g_allocator`, not `conn.allocator`, because it now outlives the connection --
+// the same allocator either way, since the pool is handed `g_allocator`.
+threadlocal var tl_resolver: ?dns_mod.Resolver = null;
+
+fn getResolver() *dns_mod.Resolver {
+    if (tl_resolver == null) {
+        tl_resolver = dns_mod.Resolver.initWithMonitor(g_allocator, g_dns_config, g_health_monitor);
+    }
+    return &tl_resolver.?;
+}
+
 fn getPublisher() *zmq.Publisher {
     if (tl_publisher == null) {
         tl_publisher = zmq.Publisher.init(g_zmq_endpoint, g_zmq_topic);
@@ -381,8 +403,7 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     }
 
     // Perform SPF evaluation
-    var resolver = dns_mod.Resolver.initWithMonitor(conn.allocator, g_dns_config, g_health_monitor);
-    defer resolver.deinit();
+    const resolver = getResolver();
 
     const eval_ctx = evaluate.EvalContext{
         .client_ip = client_addr,
@@ -392,7 +413,7 @@ fn onEom(conn: *connection_mod.Connection) u8 {
         .receiver_host = g_authserv_id,
     };
 
-    const result = evaluate.evaluateWithLimits(conn.allocator, &resolver, &eval_ctx, g_eval_limits);
+    const result = evaluate.evaluateWithLimits(conn.allocator, resolver, &eval_ctx, g_eval_limits);
     const result_str = resultToString(result.result);
     const domain = if (result.domain.len > 0) result.domain else extractDomain(mail_from);
 
@@ -579,13 +600,22 @@ fn reloadConfig() void {
     });
 }
 
-/// Per-worker reload callback: called when this worker detects the
-/// global config generation has advanced. For SecureSPF, workers have
-/// no local caches to flush (whitelist is a module global read directly),
-/// so this is a no-op placeholder for the interface contract.
+/// Per-worker reload callback: called when this worker detects the global config
+/// generation has advanced. Drops this worker's DNS resolver, which is the one
+/// piece of per-worker state a reload can invalidate.
 fn onWorkerReload() void {
-    // SecureSPF workers read g_whitelist directly (module global).
-    // No per-worker LRU cache to flush. Log for observability.
+    // SecureSPF workers read g_whitelist directly (module global), so the
+    // whitelist needs nothing here.
+    //
+    // The resolver does: it captured the nameserver list and cache sizing when
+    // it was built, so a reload that changes either has to be able to replace
+    // it. Dropping it also discards cached answers, which is the point -- after
+    // a reload the operator's intent is the new configuration, not entries
+    // fetched under the old one.
+    if (tl_resolver) |*r| {
+        r.deinit();
+        tl_resolver = null;
+    }
     log.debug("worker: config reload acknowledged", .{});
 }
 
