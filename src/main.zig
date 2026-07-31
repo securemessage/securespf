@@ -165,14 +165,11 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     const max_connections = global.getInt("MaxConnections", u32, worker_mod.DEFAULT_MAX_CONNECTIONS);
 
     // DNS config — supports comma-separated list: DnsNameserver = 10.0.0.1, 8.8.8.8
-    const dns_ns_raw = global.getOrDefault("DnsNameserver", "127.0.0.1");
-    var ns_list: std.ArrayListUnmanaged([]const u8) = .{};
-    var ns_iter = mem.splitSequence(u8, dns_ns_raw, ",");
-    while (ns_iter.next()) |part| {
-        const trimmed = mem.trim(u8, part, " \t");
-        if (trimmed.len > 0) try ns_list.append(allocator, trimmed);
-    }
-    const dns_nameservers = try ns_list.toOwnedSlice(allocator);
+    //
+    // Owned slice, borrowed contents; unlike the ArrayLists above it does not
+    // unwind itself, so it needs its own `errdefer` for every `try` below.
+    const dns_nameservers = try global.getCsvList(allocator, "DnsNameserver", "127.0.0.1");
+    errdefer allocator.free(dns_nameservers);
     const dns_timeout = global.getInt("DnsTimeout", u32, 5) * 1000; // config is seconds, we need ms
     const dns_retries = global.getInt("DnsRetries", u8, 2);
     const dns_cache_size = global.getInt("DnsCacheSize", u32, 1000);

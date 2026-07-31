@@ -122,5 +122,5 @@
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
 861 src/evaluate.zig
-627 src/main.zig
+624 src/main.zig
 685 src/spf.zig
