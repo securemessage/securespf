@@ -371,13 +371,59 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     // read an spf= verdict this daemon did not issue.
     _ = header_scrub.stripAuthResults(conn, g_authserv_id, g_strip_policy);
 
-    const client_addr = conn.macros.client_addr orelse "unknown";
+    // Via the accessor, so the address is found on a stock MTA where the
+    // {client_addr} macro is not sent. Kept OPTIONAL rather than defaulted to a
+    // placeholder, because SPF is a function of this address: inventing one does
+    // not degrade the answer, it fabricates one.
+    const client_addr_opt = conn.clientAddr();
     const mail_from_raw = conn.mail_from_raw orelse "<>";
     const helo = conn.helo_name orelse "unknown";
     const queue_id = conn.macros.queue_id orelse "-";
 
     // Strip angle brackets from MAIL FROM (Postfix sends "<user@domain>")
     const mail_from = stripAngleBrackets(mail_from_raw);
+
+    // REFUSE TO EVALUATE WITHOUT A USABLE ADDRESS.
+    //
+    // This used to substitute the literal string "unknown" and hand it to the
+    // evaluator. Nothing downstream rejected the substitution: every mechanism
+    // that inspects the client address parses it with `catch return false`
+    // (evaluate.zig:478, :489, :586, :593, :636, :643, :749), so a value that is
+    // not an address matched nothing, evaluation ran on to the terminal `-all`,
+    // and this daemon published spf=fail -- an affirmative claim that the domain
+    // DENIES this sender, asserted from an input that never existed. Under a
+    // DMARC p=reject policy that rejects legitimate mail while recording a false
+    // denial. RFC 7208 SS4.3 calls for permerror when input cannot be interpreted.
+    if (client_addr_opt == null or !isIpAddress(client_addr_opt.?)) {
+        // A connection with no network peer at all -- a unix-socket or stdin
+        // submission -- is not an error, SPF simply does not apply to it. An
+        // address that was present but did not parse is a permerror.
+        const no_peer = client_addr_opt == null and
+            (conn.connect_family == .unix or conn.connect_family == .unknown);
+        const result_str = if (no_peer) "none" else "permerror";
+        const reason = if (no_peer)
+            "no client IP: local submission"
+        else
+            "client IP address missing or malformed";
+        const domain = extractDomain(mail_from);
+        const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
+        const peer = conn.getPeerDisplay();
+        log.info("id={f} peer={f}[{f}] client={f} from={f} result={s} reason={s} elapsed={d}ms", .{
+            escape.logField(queue_id),
+            escape.logField(peer.name),
+            escape.logField(peer.ip),
+            escape.logField(client_addr_opt orelse "-"),
+            escape.logField(mail_from),
+            result_str,
+            reason,
+            elapsed_ms,
+        });
+        publishEvent(conn.allocator, client_addr_opt orelse "", helo, mail_from, result_str, domain);
+        addArHeader(conn, result_str, reason, domain, helo) catch |err|
+            return auth_stamp.deferCode(err, "spf");
+        return @intFromEnum(responses.Code.accept);
+    }
+    const client_addr = client_addr_opt.?;
 
     // Check whitelist — skip SPF for trusted hosts.
     //
@@ -451,6 +497,23 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     addArHeader(conn, result_str, null, domain, helo) catch |err|
         return auth_stamp.deferCode(err, "spf");
     return @intFromEnum(responses.Code.accept);
+}
+
+/// True when `text` parses as an IPv4 or IPv6 address.
+///
+/// Used to gate evaluation, because the evaluator itself cannot report the
+/// difference: it parses the client address at seven separate call sites and
+/// every one of them treats a parse failure as "this mechanism does not match"
+/// rather than as an error, which silently turns an uninterpretable input into
+/// a `fail` verdict. The check has to happen before evaluation starts.
+fn isIpAddress(text: []const u8) bool {
+    if (spf.parseIp4Bytes(text)) |_| {
+        return true;
+    } else |_| {}
+    if (spf.parseIp6Bytes(text)) |_| {
+        return true;
+    } else |_| {}
+    return false;
 }
 
 /// Strip leading '<' and trailing '>' from an address.
