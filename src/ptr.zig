@@ -187,3 +187,29 @@ test "isSubdomainOf" {
     try std.testing.expect(!isSubdomainOf("notexample.com", "example.com"));
     try std.testing.expect(!isSubdomainOf("evilexample.com", "example.com"));
 }
+
+test "reverseIp6Name builds the RFC 3596 nibble name, least significant first" {
+    // 2001:db8::1. This had no direct test before the split, and it is the wrong
+    // function to leave untested: every way of getting it wrong -- nibble order,
+    // high/low order within an octet, a missing separator -- produces a name that
+    // is still syntactically a domain and simply resolves to nothing. That
+    // reaches `validatedNames` as "no validated names", which is exactly what a
+    // client with no PTR record looks like, so `ptr` would answer "did not match"
+    // and `%{p}` would expand to "unknown" with nothing logged. Asserted against
+    // a literal rather than a round-trip for the same reason: a round-trip
+    // through our own builder would agree with itself.
+    var buf: [80]u8 = undefined;
+    const octets = [_]u8{ 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01 };
+    try std.testing.expectEqualStrings(
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa",
+        reverseIp6Name(&buf, octets).?,
+    );
+}
+
+test "reverseIp6Name refuses a buffer that cannot hold the whole name" {
+    // 71 is one short of the 32 nibbles, 32 separators and "ip6.arpa" the name
+    // always needs. Returning null rather than writing what fits is the point: a
+    // truncated nibble name is a valid name for a *different* address.
+    var small: [71]u8 = undefined;
+    try std.testing.expect(reverseIp6Name(&small, [_]u8{0} ** 16) == null);
+}
