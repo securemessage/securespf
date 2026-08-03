@@ -387,8 +387,9 @@ fn onEom(conn: *connection_mod.Connection) u8 {
     //
     // This used to substitute the literal string "unknown" and hand it to the
     // evaluator. Nothing downstream rejected the substitution: every mechanism
-    // that inspects the client address parses it with `catch return false`
-    // (evaluate.zig:478, :489, :586, :593, :636, :643, :749), so a value that is
+    // that inspects the client address parses it with `catch return false` --
+    // `matchIp4`, `matchIp6`, `matchA` and `matchMx` in mechanisms.zig, and
+    // `validatedNames` in ptr.zig -- so a value that is
     // not an address matched nothing, evaluation ran on to the terminal `-all`,
     // and this daemon published spf=fail -- an affirmative claim that the domain
     // DENIES this sender, asserted from an input that never existed. Under a

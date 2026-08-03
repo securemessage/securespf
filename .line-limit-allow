@@ -109,6 +109,53 @@
 #   finds two daemons requesting a flag and two not, and no statement of which
 #   is the considered case.
 #
+# 2026-08-03, evaluate.zig REACHED THE GOAL and left this list: 861 -> 259.
+#
+#   Stage 4.4 of the refactor plan. The largest body of logic in the daemon split
+#   four ways along the seams RFC 7208 already draws -- `context.zig` (the
+#   evaluation vocabulary and the DNS/limit accounting), `mechanisms.zig` (SS5, the
+#   mechanisms that test the connection), `ptr.zig` (SS5.5 validated names, shared
+#   with the SS7.2 `%{p}` macro), and `evaluate.zig` (SS4, the recursive walk).
+#   No new file needs a ceiling. Nothing was relocated to move a number: the
+#   production code moved and its tests went with it, which is the distinction the
+#   2026-07-30 note above draws.
+#
+#   `include` and the directive dispatch deliberately stayed with the recursive
+#   walk rather than joining the other mechanisms. SS5.2 defines `include` as a
+#   recursive `check_host()`, not as a test on the connection, and putting it with
+#   its siblings would have made mechanisms.zig import the evaluator that imports
+#   it. The module graph is a DAG because of that one choice.
+#
+# 2026-08-03, main.zig 624 -> 687, +63, AND THE BREACH SHIPPED BEFORE IT WAS SEEN.
+#
+#   Not accepted lightly, and not caused by the extraction above -- `git diff
+#   --numstat c0d558a 33a5d72 -- src/main.zig` is +65/-2, from X-20 (`7d493be`,
+#   never evaluate against an address we do not have) and X-19 (`33a5d72`, pass
+#   the negotiated leading-space to the A-R stamp). Both landed on 2026-08-02/03,
+#   both were built, unit-tested, conformance-tested, deployed to the lab AND to
+#   the internet-facing jail, and NEITHER RAN `zig build lint`. The ceiling was
+#   already breached at HEAD when the stage 4.4 work started; it surfaced only
+#   because that work ran the gate. A gate nobody runs is not a gate, which is the
+#   same finding as X-19's withdrawal and the `lab_require_host` guard that was
+#   committed and never deployed.
+#
+#   The lines themselves are worth keeping. Most of the +65 is X-20's rationale
+#   for refusing to evaluate rather than substituting the string "unknown" -- the
+#   reasoning that a non-address matches nothing, so evaluation walks on to the
+#   terminal `-all` and the daemon publishes an affirmative `spf=fail` for an
+#   input that never existed. That is exactly the explanation the 2026-07-30 note
+#   says this gate must stop charging for.
+#
+#   ONE CITATION IN IT WAS INVALIDATED BY THE EXTRACTION AND IS FIXED, NOT LEFT.
+#   It named the seven `catch return false` sites by line number
+#   (`evaluate.zig:478, :489, ...`), all of which moved. It now names the
+#   functions -- `matchIp4`, `matchIp6`, `matchA`, `matchMx`, `validatedNames` --
+#   which do not rot the next time a file is split.
+#
+#   NOT PAID DOWN HERE ON PURPOSE, for the reason the two X-16 notes above give:
+#   this file is stage 4.3's `settings.zig` extraction target, and it should be
+#   cut there rather than nibbled at in a pass about a different file.
+#
 # WRITE THE REASON FOR A CEILING ABOVE THIS LINE.
 #
 # From here down is regenerated whenever a ceiling moves. A comment
@@ -121,6 +168,5 @@
 # Adding an entry by hand is how you knowingly accept a long file:
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
-861 src/evaluate.zig
-624 src/main.zig
+688 src/main.zig
 685 src/spf.zig
