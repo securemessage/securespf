@@ -553,7 +553,7 @@ fn addArHeader(
                 .{ .ptype = "smtp", .property = "helo", .value = helo },
             },
         },
-    });
+    }, conn.negotiated_protocol.header_leading_space);
 }
 
 fn publishEvent(
