@@ -156,6 +156,37 @@
 #   this file is stage 4.3's `settings.zig` extraction target, and it should be
 #   cut there rather than nibbled at in a pass about a different file.
 #
+# 2026-08-04, PAID IN FULL. main.zig 688 -> 347, REACHED THE GOAL and left this
+#   list. Stage 4.3, in two commits, following the decomposition securearc
+#   already had:
+#
+#     4.3a  settings.zig  SpfConfig, parseSpfConfig, the five listener tests
+#     4.3b  flow.zig      the end-of-message pipeline and its six helpers
+#
+#   This collects every raise recorded above -- X-16(a) +3, X-16(b) +6, D-23 +2
+#   and the +63 X-19/X-20 breach -- each of which was taken with a written note
+#   saying it belonged to this extraction rather than to a tidy-up. That is the
+#   only reason they were still legible enough to collect.
+#
+#   THE CEILING WAS NEVER THE POINT AND THE SPLIT WAS NOT DRIVEN BY IT. 4.3a is a
+#   pure move (repo functions 703 -> 703). 4.3b is +1 function, and the one is
+#   `onEom` becoming a wrapper in this file over `flow.doEval` in the other --
+#   stated rather than absorbed, because a split advertised as a move has to
+#   account for its own arithmetic.
+#
+#   flow.zig deliberately does NOT copy securearc's `MsgCtx`, which holds
+#   `*Resolver` and `*Publisher` directly. securearc validates a chain on every
+#   message so its resolver is always used; this daemon reaches DNS only after
+#   the address gate and the whitelist short circuit, and both getters build
+#   lazily into thread-local storage. Taking them eagerly would construct a DNS
+#   resolver and open a ZMQ socket on a worker that handles nothing but
+#   whitelisted mail, so the context carries accessors instead. A behaviour
+#   change is not something to smuggle into a pass that claims to move code.
+#
+#   `codec` and `negotiate` were removed as dead imports and were ALREADY DEAD at
+#   0a9ba89, before this work -- verified with `git show`, not assumed. Not
+#   claimed as a result of the split.
+#
 # WRITE THE REASON FOR A CEILING ABOVE THIS LINE.
 #
 # From here down is regenerated whenever a ceiling moves. A comment
@@ -168,5 +199,4 @@
 # Adding an entry by hand is how you knowingly accept a long file:
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
-576 src/main.zig
 685 src/spf.zig
