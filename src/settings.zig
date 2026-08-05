@@ -32,6 +32,8 @@ pub const SpfConfig = struct {
     pid_file: []const u8,
     foreground: bool,
     user: ?[]const u8,
+    /// File-creation mask for the PID file and any unix-domain listener.
+    umask: ?std.posix.mode_t,
     dns_nameservers: []const []const u8,
     dns_timeout_ms: u32,
     dns_retries: u8,
@@ -54,6 +56,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     const pid_file = global.getOrDefault("PidFile", "/var/run/securespf/securespf.pid");
     const foreground_val = global.getBool("Foreground", false);
     const user = global.get("User");
+    const umask = try global.getMode("UMask");
 
     // Collect listener addresses
     var addrs: std.ArrayListUnmanaged(listener_mod.ListenAddress) = .{};
@@ -122,6 +125,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .pid_file = pid_file,
         .foreground = foreground_val,
         .user = user,
+        .umask = umask,
         .dns_nameservers = dns_nameservers,
         .dns_timeout_ms = dns_timeout,
         .dns_retries = dns_retries,

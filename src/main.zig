@@ -194,6 +194,7 @@ fn runDaemon() !void {
         .foreground = spf_cfg.foreground,
         .pid_file = spf_cfg.pid_file,
         .user = spf_cfg.user,
+        .umask = spf_cfg.umask,
         .worker_threads = spf_cfg.worker_threads,
         .max_connections = spf_cfg.max_connections,
         .num_listeners = @intCast(spf_cfg.listen_addresses.len),

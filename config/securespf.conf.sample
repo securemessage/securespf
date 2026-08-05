@@ -25,8 +25,34 @@ SyslogFacility  = mail
 # PID file location.
 PidFile         = /var/run/securespf/securespf.pid
 
-# Drop privileges to this user after binding sockets.
+# Drop privileges to this user, as "user" or "user:group".
+#
+# The drop happens BEFORE the listeners are bound, not after, which has two
+# consequences worth knowing: a unix socket is created owned by this user and
+# group, and the directory it lives in must be writable by them.
+#
+# The optional group is what makes a shared unix socket work -- name the group
+# the MTA runs in and set UMask below, and the socket is reachable by Postfix
+# and by nothing else.
 User            = _spf
+
+# File-creation mask for the PID file and any unix-domain listener.
+#
+# Read as OCTAL whether or not you write the leading zero. Unset inherits
+# whatever mask the supervisor had, which for a unix socket means 0755 --
+# world-connectable, and since this daemon writes Authentication-Results that
+# a downstream milter trusts, that is every local account inside the trust
+# boundary.
+#
+# 0117 gives a socket at 0660: owner and group only. Pair it with a group in
+# User above. This is the only control there is -- a socket takes its mode from
+# the umask at bind time, and there is no window-free way to widen or narrow it
+# afterwards.
+#
+# Does not apply to the TCP listener below, which has no filesystem
+# permissions; for that, bind to loopback and rely on the host being a
+# dedicated milter host.
+# UMask         = 0117
 
 # Run in foreground (do not daemonize). Useful for debugging.
 # Foreground    = no
