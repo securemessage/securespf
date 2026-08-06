@@ -3,6 +3,9 @@ const mem = std.mem;
 const net = std.net;
 const Allocator = mem.Allocator;
 
+const securemilter = @import("securemilter");
+const log = securemilter.log;
+
 const spf = @import("spf.zig");
 
 /// An entry in the whitelist: either a single IP or a CIDR range.
@@ -45,6 +48,13 @@ pub const Whitelist = struct {
 
             if (parseEntry(line)) |entry| {
                 try entries.append(allocator, entry);
+            } else {
+                // A line that does not parse used to vanish here. An operator
+                // who mistypes an entry is left believing a host bypasses SPF
+                // when it does not, and nothing anywhere says otherwise -- so
+                // the failure is only ever discovered as mail being checked
+                // that was meant to be trusted (S-12).
+                log.warn("whitelist: ignoring unparseable entry {s}", .{line});
             }
         }
 
@@ -75,14 +85,18 @@ pub const Whitelist = struct {
                 }
             }
         } else {
-            const client = net.Ip6Address.parse(ip_str, 0) catch return false;
+            // `spf.parseIp6Bytes`, not `net.Ip6Address.parse`: the entry was
+            // parsed by the strict grammar, so the address being matched
+            // against it has to be too, or the two disagree about which
+            // address this is (S-7, S-12).
+            const client = spf.parseIp6Bytes(ip_str) catch return false;
             for (self.entries) |entry| {
                 switch (entry) {
                     .ip6_exact => |addr| {
-                        if (mem.eql(u8, &client.sa.addr, &addr)) return true;
+                        if (mem.eql(u8, &client, &addr)) return true;
                     },
                     .ip6_cidr => |cidr| {
-                        if (matchIp6Prefix(client.sa.addr, cidr.addr, cidr.prefix)) return true;
+                        if (matchIp6Prefix(client, cidr.addr, cidr.prefix)) return true;
                     },
                     else => {},
                 }
@@ -105,12 +119,21 @@ fn parseEntry(line: []const u8) ?Entry {
 
     if (is_v6) {
         const addr_str = if (slash) |s| line[0..s] else line;
-        const parsed = net.Ip6Address.parse(addr_str, 0) catch return null;
+        // S-7 recorded that `std.net.Ip6Address.parse` is wrong in both
+        // directions and replaced it in `spf.zig`; this call site was not
+        // converted with it. Both halves of that defect land harder here than
+        // in a record. It rejects `::1.1.1.1`, legal under RFC 4291 2.2 form 3,
+        // so a correct entry was dropped -- which at least fails closed. And it
+        // accepts `:CAFE::/32`, whose single leading colon is illegal, silently
+        // returning `::` -- so the operator enforces a range they never wrote,
+        // in a file whose entries skip SPF evaluation completely (S-12).
+        const parsed = spf.parseIp6Bytes(addr_str) catch return null;
         if (slash) |s| {
             const prefix = std.fmt.parseInt(u8, line[s + 1 ..], 10) catch return null;
-            return .{ .ip6_cidr = .{ .addr = parsed.sa.addr, .prefix = prefix } };
+            if (prefix > 128) return null;
+            return .{ .ip6_cidr = .{ .addr = parsed, .prefix = prefix } };
         }
-        return .{ .ip6_exact = parsed.sa.addr };
+        return .{ .ip6_exact = parsed };
     } else {
         const addr_str = if (slash) |s| line[0..s] else line;
         const parsed = net.Ip4Address.parse(addr_str, 0) catch return null;
@@ -176,6 +199,58 @@ test "parse and match ipv6" {
     try std.testing.expect(wl.contains("::1"));
     try std.testing.expect(wl.contains("2001:db8::1"));
     try std.testing.expect(!wl.contains("2001:db9::1"));
+}
+
+// S-12. Both directions of the parser S-7 condemned, pinned against the
+// whitelist rather than against a record, because this is the file where a
+// wrong answer skips SPF evaluation altogether.
+
+test "S-12: a legal dotted-quad entry is kept, not silently dropped" {
+    // RFC 4291 2.2 form 3: a trailing dotted-quad is legal after ANY prefix.
+    // std.net.Ip6Address.parse rejects both of these as InvalidIpv4Mapping, and
+    // parseEntry discards what it cannot parse, so before S-12 an operator who
+    // wrote either of these got no entry and no message saying so.
+    var wl = try Whitelist.parse(std.testing.allocator,
+        \\::1.1.1.1
+        \\0:0:0:0:0:0:2.2.2.2
+    );
+    defer wl.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), wl.entries.len);
+    try std.testing.expect(wl.contains("::1.1.1.1"));
+    try std.testing.expect(wl.contains("::101:101")); // the same address, written the other way
+    try std.testing.expect(wl.contains("0:0:0:0:0:0:2.2.2.2"));
+}
+
+test "S-12: a malformed entry is rejected, not repaired into a different range" {
+    // ":CAFE::" has one leading colon, which is illegal -- only "::" may begin
+    // an address. std.net accepts it and returns "::", so the /32 an operator
+    // believed they were whitelisting became a different /32 containing the
+    // unspecified address. Fails open, which is the direction that matters.
+    var wl = try Whitelist.parse(std.testing.allocator,
+        \\:CAFE::/32
+        \\:1:2:3:4:5:6:7
+    );
+    defer wl.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), wl.entries.len);
+    try std.testing.expect(!wl.contains("::"));
+    try std.testing.expect(!wl.contains("::1"));
+}
+
+test "S-12: a client address is matched by the same grammar as the entry" {
+    // The entry and the client string are two parses of one address; if they
+    // disagree the whitelist matches something other than what it holds.
+    var wl = try Whitelist.parse(std.testing.allocator,
+        \\::ffff:1.2.3.4
+        \\2001:db8::/32
+    );
+    defer wl.deinit();
+
+    try std.testing.expect(wl.contains("::ffff:1.2.3.4"));
+    try std.testing.expect(wl.contains("::ffff:102:304")); // same address, hex form
+    try std.testing.expect(!wl.contains(":CAFE::1")); // malformed client is not repaired into a match
+    try std.testing.expect(wl.contains("2001:db8::dead:beef"));
 }
 
 test "empty whitelist matches nothing" {

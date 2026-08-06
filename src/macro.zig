@@ -3,6 +3,8 @@ const mem = std.mem;
 const fmt = std.fmt;
 const Allocator = mem.Allocator;
 
+const spf = @import("spf.zig");
+
 /// Context needed for SPF macro expansion (RFC 7208 §7).
 pub const Context = struct {
     /// MAIL FROM sender (e.g., "user@example.com").
@@ -171,9 +173,14 @@ fn expandClientIp(allocator: Allocator, ctx: *const Context) ![]u8 {
 
     // RFC 7208 §7.3: IPv6 → expand to 32 dot-separated nibble characters
     // Parse the colon-hex address into 16 bytes, then emit each nibble
-    const parsed = std.net.Ip6Address.parse(ctx.client_ip, 0) catch
+    //
+    // `spf.parseIp6Bytes` rather than `std.net.Ip6Address.parse` (S-7, S-12).
+    // The fallback below returns the address unexpanded, which is not a legal
+    // %{i} expansion, so every literal the stdlib parser rejects produced a
+    // macro-bearing query for a name no zone can hold -- and `::1.1.1.1` is a
+    // literal it rejects and RFC 4291 2.2 permits.
+    const bytes = spf.parseIp6Bytes(ctx.client_ip) catch
         return allocator.dupe(u8, ctx.client_ip);
-    const bytes = parsed.sa.addr;
 
     var buf: [63]u8 = undefined; // 32 nibbles + 31 dots
     var pos: usize = 0;
@@ -329,6 +336,26 @@ test "expand ipv6 client ip as nibbles" {
     // 2.0.0.1.0.d.b.8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.c.b.0.1
     try std.testing.expectEqualStrings(
         "2.0.0.1.0.d.b.8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.c.b.0.1",
+        i_val,
+    );
+}
+
+test "S-12: %{i} expands a dotted-quad-suffixed client address" {
+    // RFC 4291 2.2 form 3. `std.net.Ip6Address.parse` rejects this as
+    // InvalidIpv4Mapping, and the fallback hands back the address unexpanded --
+    // so `exists:%{i}._spf.example.com` queried a name containing colons rather
+    // than the 32 nibbles 7.3 requires, and the lookup could only ever miss.
+    const ctx = Context{
+        .sender = "user@example.com",
+        .domain = "example.com",
+        .client_ip = "::1.2.3.4",
+        .is_ipv6 = true,
+    };
+
+    const i_val = try expand(std.testing.allocator, "%{i}", &ctx);
+    defer std.testing.allocator.free(i_val);
+    try std.testing.expectEqualStrings(
+        "0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.2.0.3.0.4",
         i_val,
     );
 }
