@@ -1,3 +1,27 @@
+# 2026-08-05, EVERY NUMBER BELOW PREDATES A CHANGE TO WHAT IS COUNTED. Read the
+#   figures in the older notes as historical; they do not describe these files now.
+#
+#   Until today `prod_lines` charged a comment sitting above ordinary code and
+#   freed one only above a `test` -- while the checker's own header stated the rule
+#   as "comments and tests never count". The code now does what the header always
+#   said it did. Across the six packages that moved the counted total from 21,353
+#   to 12,408 -- 41% of what was being measured was comment text -- and the count
+#   of files over the goal from 15 to 2, with no code removed anywhere.
+#
+#   So a ceiling quoted below is a comment-INCLUSIVE number and cannot be compared
+#   against one measured today. The reasoning in those notes stands unchanged; only
+#   their figures are on the old scale.
+#
+#   spf.zig is one of only TWO files in the tree still over the goal on this scale,
+#   at 444 -- the other is securemilter-lib/src/worker.zig at 456. Those two are
+#   now the entire length problem, and unlike the thirteen that dropped off they
+#   are genuinely that long in logic.
+#
+#   THE CONSOLIDATION WORK IS NO LONGER JUSTIFIED BY LENGTH. Thirteen files stopped
+#   being flagged without losing a line of code. What still justifies it is
+#   duplication -- four copies of one tag scanner, two of one tool -- which this
+#   gate has never been able to see.
+#
 # 2026-07-30, THE CLAIM ABOVE BECAME TRUE TODAY, NOT WHEN IT WAS WRITTEN. The note
 #   beginning "THE COUNTER NOW MEASURES PRODUCTION LINES ONLY, in any file" described
 #   an intent the script did not implement: list_sources() still skipped *_test.zig
@@ -199,4 +223,4 @@
 # Adding an entry by hand is how you knowingly accept a long file:
 #   zig build lint -- --update
 # An empty list below means every file meets the goal.
-685 src/spf.zig
+444 src/spf.zig
