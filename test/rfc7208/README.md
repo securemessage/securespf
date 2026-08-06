@@ -20,9 +20,17 @@ when the binary is not in the tree.
 
 ## What it actually tests, and why it is set up this way
 
-`mockdns.py` is a minimal authoritative DNS server that answers from the suite's
-own `zonedata` blocks. `securespf-check -n 127.0.0.1 -p <port>` then points the
-daemon's **real** resolver at it.
+`securemilter-lib/test/dnsfake.py` is a minimal authoritative DNS server shared by
+every conformance suite in the tree; this one uses its `RecordZone`, which answers
+from the suite's own `zonedata` blocks. `securespf-check -n 127.0.0.1 -p <port>`
+then points the daemon's **real** resolver at it.
+
+It lived here as `mockdns.py` until 2026-08-05, when four near-identical DNS fakes
+became one. This suite needs by far the richest zone model — A, AAAA, MX, PTR,
+CNAME chains, the type-99 `SPF` record and the `TIMEOUT` / `TYPE: NONE` sentinels —
+so `RecordZone` is essentially the old `Zone` moved intact, while the three
+TXT-only suites share the much simpler `TxtZone`. Only the wire codec and the
+server loop are common, which is the seam that was actually duplicated.
 
 That choice is the point of the harness. The alternative — stubbing DNS inside
 the Zig code — would test the evaluation logic while replacing the component most

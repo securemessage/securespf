@@ -4,8 +4,8 @@ Usage: runsuite.py [-v] [--section SUBSTRING] [--test NAME]
 
 Each test names a client IP, a HELO and a MAIL FROM, and expects one of a set of
 results -- which is exactly the check_host() interface `securespf-check` exposes.
-The suite's zonedata is served by mockdns.py, so no production code is modified
-and the daemon's real resolver is the one under test.
+The suite's zonedata is served by the shared DNS fake, so no production code is
+modified and the daemon's real resolver is the one under test.
 """
 
 import argparse
@@ -16,7 +16,14 @@ import sys
 
 import yaml
 
-from mockdns import MockDns, Zone
+# One DNS fake serves every conformance suite in the tree; securemilter-lib's
+# test/dnsfake.py records why it is not four any more. Reachable because
+# build.zig.zon already depends on ../securemilter-lib by path, so the six
+# repositories are checked out side by side.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "securemilter-lib", "test"))
+
+from dnsfake import DnsFake, RecordZone   # noqa: E402
 
 # Resolve the checker from this file's location -- test/rfc7208/ -> repo root --
 # so the suite runs from a fresh clone with no editing. SECURESPF_CHECK
@@ -86,7 +93,7 @@ def main():
     with open(args.yaml, "r", encoding="latin-1") as fh:
         docs = [d for d in yaml.safe_load_all(fh) if d]
 
-    server = MockDns()
+    server = DnsFake()
     server.start()
 
     # The suite is a stream of documents; a document carries tests, zonedata or
@@ -108,7 +115,7 @@ def main():
     for desc, tests, zonedata in sections:
         if args.section and args.section.lower() not in (desc or "").lower():
             continue
-        zone = Zone(zonedata, duplicate_spf_to_txt=True)
+        zone = RecordZone(zonedata, duplicate_spf_to_txt=True)
         server.set_zone(zone)
 
         for name, spec in sorted(tests.items()):
