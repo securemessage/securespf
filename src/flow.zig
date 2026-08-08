@@ -23,6 +23,7 @@ const Allocator = mem.Allocator;
 const securemilter = @import("securemilter");
 const connection_mod = securemilter.connection;
 const auth_stamp = securemilter.auth_stamp;
+const auth_results = securemilter.auth_results;
 const escape = securemilter.escape;
 const responses = securemilter.milter.responses;
 const zmq = securemilter.zmq;
@@ -125,7 +126,9 @@ pub fn doEval(conn: *connection_mod.Connection, ctx: MsgCtx) u8 {
             elapsed_ms,
         });
         publishEvent(conn.allocator, ctx.publisher(), client_addr_opt orelse "", helo, mail_from, result_str, domain);
-        addArHeader(conn, ctx.authserv_id, result_str, reason, domain, helo) catch |err|
+        // No smtp.client-ip on this path: the value is either absent or is a
+        // string that is not an address, and neither belongs in the header.
+        addArHeader(conn, ctx.authserv_id, result_str, reason, domain, helo, null) catch |err|
             return auth_stamp.deferCode(err, "spf");
         return @intFromEnum(responses.Code.accept);
     }
@@ -144,7 +147,7 @@ pub fn doEval(conn: *connection_mod.Connection, ctx: MsgCtx) u8 {
             escape.logField(mail_from),
             elapsed_ms,
         });
-        addArHeader(conn, ctx.authserv_id, "pass", "client is whitelisted", extractDomain(mail_from), helo) catch |err|
+        addArHeader(conn, ctx.authserv_id, "pass", "client is whitelisted", extractDomain(mail_from), helo, client_addr) catch |err|
             return auth_stamp.deferCode(err, "spf");
         return @intFromEnum(responses.Code.accept);
     }
@@ -196,7 +199,7 @@ pub fn doEval(conn: *connection_mod.Connection, ctx: MsgCtx) u8 {
     // Publish ZMQ event (fire-and-forget, non-blocking)
     publishEvent(conn.allocator, ctx.publisher(), client_addr, helo, mail_from, result_str, domain);
 
-    addArHeader(conn, ctx.authserv_id, result_str, null, domain, helo) catch |err|
+    addArHeader(conn, ctx.authserv_id, result_str, null, domain, helo, client_addr) catch |err|
         return auth_stamp.deferCode(err, "spf");
     return @intFromEnum(responses.Code.accept);
 }
@@ -245,16 +248,34 @@ fn addArHeader(
     reason: ?[]const u8,
     domain: []const u8,
     helo: []const u8,
+    client_ip: ?[]const u8,
 ) !void {
+    // smtp.client-ip records the address the verdict was computed FROM. Without
+    // it an A-R header says "spf=fail" but not *of whom*, and the only remaining
+    // record is a log line on this host. Omitted rather than written empty when
+    // the address is missing or malformed -- the property asserts an address
+    // existed.
+    //
+    // An IPv6 address contains ':', outside the pvalue token set, so the builder
+    // renders it quoted (smtp.client-ip="fd10:99::254"). That is RFC 8601 §2.2
+    // quoted-string form, not a defect.
+    var properties: [3]auth_results.MethodResult.Property = undefined;
+    var prop_count: usize = 0;
+    if (client_ip) |ip| {
+        properties[prop_count] = .{ .ptype = "smtp", .property = "client-ip", .value = ip };
+        prop_count += 1;
+    }
+    properties[prop_count] = .{ .ptype = "smtp", .property = "mailfrom", .value = domain };
+    prop_count += 1;
+    properties[prop_count] = .{ .ptype = "smtp", .property = "helo", .value = helo };
+    prop_count += 1;
+
     try auth_stamp.stamp(conn.allocator, conn.fd, authserv_id, &.{
         .{
             .method = "spf",
             .result = result_str,
             .reason = reason,
-            .properties = &.{
-                .{ .ptype = "smtp", .property = "mailfrom", .value = domain },
-                .{ .ptype = "smtp", .property = "helo", .value = helo },
-            },
+            .properties = properties[0..prop_count],
         },
     }, conn.negotiated_protocol.header_leading_space);
 }
@@ -323,6 +344,41 @@ test "extract domain from mail from" {
     try std.testing.expectEqualStrings("example.com", extractDomain("user@example.com"));
     try std.testing.expectEqualStrings("", extractDomain("<>"));
     try std.testing.expectEqualStrings("postmaster", extractDomain("postmaster"));
+}
+
+test "the A-R stamp records smtp.client-ip, quoted for IPv6, omitted when absent" {
+    // The property is what ties a verdict to an address once the message has
+    // left this host. Three cases: a bare IPv4 pvalue, an IPv6 address forced
+    // into quoted-string form by the ':' bytes, and no property at all when the
+    // connection carried no usable address (the none/permerror path).
+    const posix = std.posix;
+    const Case = struct { ip: ?[]const u8, want: ?[]const u8 };
+    const cases = [_]Case{
+        .{ .ip = "10.99.0.254", .want = "smtp.client-ip=10.99.0.254" },
+        .{ .ip = "fd10:99::254", .want = "smtp.client-ip=\"fd10:99::254\"" },
+        .{ .ip = null, .want = null },
+    };
+    for (cases) |c| {
+        const fds = try posix.pipe2(.{ .NONBLOCK = true });
+        defer posix.close(fds[0]);
+
+        var conn = connection_mod.Connection.init(std.testing.allocator, fds[1], 0, .{});
+        try addArHeader(&conn, "mail.test", "fail", null, "example.com", "relay.test", c.ip);
+        conn.deinit(); // closes fds[1]
+
+        var buf: [512]u8 = undefined;
+        const n = try posix.read(fds[0], &buf);
+        const packet = buf[0..n];
+        try std.testing.expect(mem.indexOf(u8, packet, "spf=fail") != null);
+        if (c.want) |w| {
+            if (mem.indexOf(u8, packet, w) == null) {
+                std.debug.print("WANT: {s}\nPACKET({d}): {s}\n", .{ w, n, packet });
+            }
+            try std.testing.expect(mem.indexOf(u8, packet, w) != null);
+        } else {
+            try std.testing.expect(mem.indexOf(u8, packet, "client-ip") == null);
+        }
+    }
 }
 
 // X-9: this wrapper must stay fallible.
