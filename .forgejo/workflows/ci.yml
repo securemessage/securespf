@@ -39,6 +39,9 @@ jobs:
       - name: Build
         run: cd securespf && zig build
 
+      - name: Lint
+        run: cd securespf && zig build lint
+
       - name: Unit tests
         run: cd securespf && zig build test
 
