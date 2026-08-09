@@ -20,3 +20,8 @@ zig-cache/
 # artefact should still never be committed.
 __pycache__/
 *.pyc
+
+# Virtualenvs. One was swept into 29efbe2 on 2026-08-09 by editing this file
+# and `git add -A` in the same commit (14 MB, 1079 files); removing it from
+# history took a filter-branch + force-push + server-side gc. Never again.
+.venv/
