@@ -20,6 +20,7 @@ jobs:
         with:
           repository: securemessage/securemilter-lib
           path: securemilter-lib
+          token: ${{ secrets.FORGE_TOKEN }}
 
       - name: Checkout rfc-suites (conformance framework, pinned)
         uses: actions/checkout@v4
