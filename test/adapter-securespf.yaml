@@ -1,0 +1,13 @@
+# Adapter: SecureMilter securespf
+#
+# Lives in the securespf repository (test/adapter-securespf.yaml); a copy is
+# kept here during framework bring-up. {bin} is zig-out/bin/securespf-check.
+name: securespf
+suite: rfc7208-spf
+argv: ["{bin}", "-i", "{ip}", "-s", "{mailfrom}", "-n", "{dns_addr}", "-p", "{dns_port}"]
+argv_optional:
+  helo: ["-e", "{helo}"]
+verdict:
+  kind: regex_first_line
+  pattern: '^securespf-check:\s*([a-z]+)\s*$'
+  values: [pass, fail, softfail, neutral, none, permerror, temperror]

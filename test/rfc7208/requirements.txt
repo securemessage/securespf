@@ -1,3 +1,0 @@
-# Only dependency: the suite specification is YAML.
-# Pinned to the version the 203/203 run was produced with.
-PyYAML==6.0.3

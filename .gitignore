@@ -15,15 +15,8 @@ zig-cache/
 # pattern.
 *.core
 
-# Python bytecode from the RFC 7208 conformance harness. A .pyc was committed on
-# 2026-07-29 for want of this line -- same class as the *.core lapse: a build
-# artefact ignored by filename rather than by pattern.
+# Python bytecode. The RFC 7208 harness moved to the rfc-suites repository
+# (PHP) on 2026-08-09; no Python remains in this repo, but a stray checkout
+# artefact should still never be committed.
 __pycache__/
 *.pyc
-
-# The conformance harness virtualenv: thousands of third-party files, rebuilt from
-# requirements.txt in one command. test/rfc7208/README.md tells you to create it
-# right here, so `git status` offered to add the whole tree the first time the
-# suite was run from a clean checkout. Already listed in securearc for the same
-# reason; this daemon was missed.
-.venv/

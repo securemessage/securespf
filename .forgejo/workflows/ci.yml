@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: FreeBSD
+    steps:
+      - name: Checkout securespf
+        uses: actions/checkout@v4
+        with:
+          path: securespf
+
+      - name: Checkout securemilter-lib (sibling path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: securemessage/securemilter-lib
+          path: securemilter-lib
+
+      - name: Checkout rfc-suites (conformance framework, pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: securemessage/rfc-suites
+          path: rfc-suites
+          ref: v0.1.0
+          token: ${{ secrets.FORGE_TOKEN }}
+
+      - name: PHP ext-yaml
+        run: php -m | grep -qi '^yaml$' || doas pkg install -y php84-pecl-yaml
+
+      - name: Build
+        run: cd securespf && zig build
+
+      - name: Unit tests
+        run: cd securespf && zig build test
+
+      - name: RFC 7208 conformance (openspf suite)
+        run: |
+          cd securespf && php ../rfc-suites/suites/rfc7208-spf/run.php \
+            --adapter test/adapter-securespf.yaml \
+            --bin zig-out/bin/securespf-check
