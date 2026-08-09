@@ -3,6 +3,8 @@ const mem = std.mem;
 const net = std.net;
 const Allocator = mem.Allocator;
 
+const securemilter = @import("securemilter");
+
 /// SPF evaluation results per RFC 7208 §2.6.
 pub const Result = enum {
     none,
@@ -567,122 +569,13 @@ pub fn parseIp4Arg(arg: []const u8) !struct { addr: [4]u8, prefix: u8 } {
     return .{ .addr = bytes, .prefix = prefix };
 }
 
-/// Longest IPv6 literal in text form, "xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:d.d.d.d".
-const ip6_text_max = 45;
-
-fn hexValue(ch: u8) u16 {
-    return switch (ch) {
-        '0'...'9' => ch - '0',
-        'a'...'f' => ch - 'a' + 10,
-        'A'...'F' => ch - 'A' + 10,
-        else => unreachable,
-    };
-}
-
-/// Parse an IPv6 literal into its 16 octets, per RFC 4291 §2.2.
-///
-/// Hand-rolled rather than delegated to `std.net.Ip6Address.parse`, which is
-/// wrong in both directions for our purposes:
-///
-///   - It rejects "::1.1.1.1" and "0:0:0:0:0:0:1.1.1.1" as InvalidIpv4Mapping.
-///     §2.2 form 3 permits a trailing dotted-quad after *any* prefix; only the
-///     "::ffff:" case is an IPv4-mapped address, and the grammar is not limited to
-///     it. `ip6:::1.1.1.1/0` is a legal mechanism and we were failing the record.
-///   - It accepts ":CAFE::BABE", whose single leading colon is illegal -- only
-///     "::" may begin an address -- and returns "::BABE", silently discarding a
-///     group. Validating with a parser that repairs its input means accepting a
-///     malformed record *and* matching against the wrong address.
-///
-/// A parser that decides which senders are authorized has to implement the
-/// grammar exactly, in one place, so both validation and matching agree.
-pub fn parseIp6Bytes(text: []const u8) ParseError![16]u8 {
-    if (text.len == 0 or text.len > ip6_text_max) return error.InvalidIp;
-
-    // Rewrite a trailing dotted-quad into the two hex groups it stands for, so
-    // that only one grammar has to be parsed below.
-    var buf: [ip6_text_max + 8]u8 = undefined;
-    var body = text;
-    if (mem.indexOfScalar(u8, text, '.') != null) {
-        const cut = mem.lastIndexOfScalar(u8, text, ':') orelse return error.InvalidIp;
-        const quad = parseIp4Bytes(text[cut + 1 ..]) catch return error.InvalidIp;
-        body = std.fmt.bufPrint(&buf, "{s}{x}:{x}", .{
-            text[0 .. cut + 1],
-            (@as(u16, quad[0]) << 8) | quad[1],
-            (@as(u16, quad[2]) << 8) | quad[3],
-        }) catch return error.InvalidIp;
-    }
-
-    var groups = [_]u16{0} ** 8;
-    var count: usize = 0;
-    // Where "::" appeared, as an index into the groups seen so far.
-    var gap: ?usize = null;
-
-    var i: usize = 0;
-    var expect_group = true;
-    while (i < body.len) {
-        if (expect_group) {
-            if (body[i] == ':') {
-                // Only "::" may stand where a group is expected, which is what
-                // rejects a single leading colon.
-                if (i + 1 >= body.len or body[i + 1] != ':') return error.InvalidIp;
-                if (gap != null) return error.InvalidIp; // at most one "::"
-                gap = count;
-                i += 2;
-                if (i == body.len) {
-                    expect_group = false;
-                    break;
-                }
-                continue;
-            }
-            var digits: usize = 0;
-            var value: u32 = 0;
-            while (i < body.len and std.ascii.isHex(body[i])) : (i += 1) {
-                value = value * 16 + hexValue(body[i]);
-                digits += 1;
-            }
-            if (digits == 0 or digits > 4) return error.InvalidIp;
-            if (count >= 8) return error.InvalidIp;
-            groups[count] = @intCast(value);
-            count += 1;
-            expect_group = false;
-        } else {
-            if (body[i] != ':') return error.InvalidIp;
-            expect_group = true;
-            // Leave a second colon for the group branch, so "::" is recognised
-            // there and ":::" is not mistaken for a separator plus compression.
-            if (i + 1 < body.len and body[i + 1] == ':') continue;
-            i += 1;
-        }
-    }
-    // Ending on a separator, as in "1:2:" or "1:2:3:4:5:6:7:", is invalid.
-    if (expect_group) return error.InvalidIp;
-
-    if (gap) |g| {
-        // §2.2: "::" indicates one or more groups of zeros, so a fully populated
-        // address leaves it nothing to stand for.
-        if (count >= 8) return error.InvalidIp;
-        var moved: usize = 0;
-        while (moved < count - g) : (moved += 1) {
-            groups[7 - moved] = groups[count - 1 - moved];
-            groups[count - 1 - moved] = 0;
-        }
-    } else if (count != 8) {
-        return error.InvalidIp;
-    }
-
-    var out: [16]u8 = undefined;
-    for (groups, 0..) |group, idx| {
-        out[idx * 2] = @intCast(group >> 8);
-        out[idx * 2 + 1] = @truncate(group);
-    }
-    return out;
-}
-
-/// Convert a dot-notation IPv4 string to 4 bytes.
-pub fn parseIp4Bytes(ip_str: []const u8) ![4]u8 {
-    const ip = net.Ip4Address.parse(ip_str, 0) catch return error.InvalidIp;
-    return @bitCast(ip.sa.addr);
-}
+/// L-7: the strict RFC 4291 IPv6 parser lives in `securemilter-lib`
+/// (`securemilter.ip`) since 2026-08-08 -- MOVED, not copied, so the
+/// authorization path here and the config path in the library cannot
+/// disagree about what an address is. These aliases keep the call sites'
+/// spelling; the parser's own tests moved with it.
+pub const parseIp6Bytes = securemilter.ip.parseIp6Bytes;
+pub const parseIp4Bytes = securemilter.ip.parseIp4Bytes;
 
 test "parse simple spf record" {
     var record = try parseRecord(std.testing.allocator, "v=spf1 +mx a:colo.example.com/28 -all");
