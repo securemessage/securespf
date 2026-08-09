@@ -14,6 +14,7 @@ const Allocator = mem.Allocator;
 const securemilter = @import("securemilter");
 const config = securemilter.config;
 const dns = securemilter.dns;
+const deadline_mod = securemilter.deadline;
 
 const spf = @import("spf.zig");
 
@@ -213,20 +214,20 @@ pub const EvalState = struct {
     terms: usize = 0,
     /// Terms whose lookup found nothing.
     void_lookups: usize = 0,
-    deadline_ms: i64,
+    /// The X-21 deadline, as the library's type since 2026-08-08: the same
+    /// bound the other three daemons now share, rather than a local copy of
+    /// the arithmetic.
+    deadline: deadline_mod.Deadline,
 
     pub fn init(limits: Limits) EvalState {
         return .{
             .limits = limits,
-            .deadline_ms = if (limits.max_duration_ms == 0)
-                std.math.maxInt(i64)
-            else
-                std.time.milliTimestamp() + limits.max_duration_ms,
+            .deadline = deadline_mod.Deadline.fromNow(limits.max_duration_ms),
         };
     }
 
     pub fn expired(self: *const EvalState) bool {
-        return std.time.milliTimestamp() >= self.deadline_ms;
+        return self.deadline.expired();
     }
 
     /// Charge one DNS-querying term against the RFC 7208 §4.6.4 budget.
@@ -349,7 +350,6 @@ test "an exhausted deadline is a temperror, never a verdict" {
 
 test "zero duration disables the deadline" {
     var state = EvalState.init(.{ .max_duration_ms = 0 });
-    try std.testing.expectEqual(std.math.maxInt(i64), state.deadline_ms);
     try std.testing.expect(!state.expired());
 }
 
