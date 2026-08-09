@@ -37,9 +37,8 @@ const rcu_mod = securemilter.rcu;
 // Module-level config set before worker spawn, read-only during runtime.
 var g_authserv_id: []const u8 = "localhost";
 var g_dns_config: dns_mod.ResolverConfig = .{};
-/// Whitelist behind an RCU container: workers read it on every message while
-/// SIGHUP replaces it. Freeing the old entries in place was audit X-2 — a
-/// worker iterating `entries` in `contains()` would read freed memory.
+/// Whitelist behind RCU: workers read while SIGHUP replaces. Freeing in place
+/// was audit X-2 (freed memory read by `contains()`).
 var g_whitelist: WhitelistRcu = undefined;
 const WhitelistRcu = rcu_mod.Rcu(whitelist.Whitelist);
 
@@ -63,12 +62,8 @@ var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
 var g_allocator: Allocator = undefined;
 var g_health_monitor: ?*dns_mod.HealthMonitor = null;
 
-/// `daemon.Options.spawn_threads`: start the DNS health monitor.
-///
-/// Reads `g_allocator` and `g_dns_config`, both set from the parsed configuration well
-/// before the bootstrap runs. Context-free because that is what `daemon.Options` takes,
-/// and deliberately so — the hook is called at the one point in the sequence where
-/// creating a thread is safe, and a parameter would invite calling it from elsewhere.
+/// Start health monitor. Context-free to match `daemon.Options.spawn_threads`;
+/// safe only at the single bootstrap point after daemonize and signal blocking.
 fn spawnHealthMonitor() void {
     g_health_monitor = dns_mod.startMonitor(g_allocator, g_dns_config.nameservers);
 }
@@ -80,19 +75,9 @@ var g_config_gen: reload_mod.ConfigGeneration = reload_mod.ConfigGeneration.init
 // Thread-local ZMQ publisher (one socket per worker thread — ZMQ thread-safety)
 threadlocal var tl_publisher: ?zmq.Publisher = null;
 
-// Thread-local DNS resolver (audit X-3).
-//
-// One SPF evaluation costs up to `Limits.max_dns_lookups` queries, and the names
-// it asks for repeat heavily across messages: the same sending domains, the same
-// `include:` targets, the same `redirect=`. Building the resolver per message
-// threw its TTL cache away every time, so every one of those queries was a cold
-// round trip. The negative cache mattered more still -- it exists so an
-// NXDOMAIN flood is answered from memory, and a cache that never outlives one
-// message cannot do that.
-//
-// Per worker thread so it needs no lock, matching the publisher above.
-// `g_allocator`, not `conn.allocator`, because it now outlives the connection --
-// the same allocator either way, since the pool is handed `g_allocator`.
+// Thread-local DNS resolver (audit X-3). Per-message resolver construction
+// discarded the TTL and negative caches; per-worker keeps them alive.
+// Lock-free, matching the publisher.
 threadlocal var tl_resolver: ?dns_mod.Resolver = null;
 
 fn getResolver() *dns_mod.Resolver {

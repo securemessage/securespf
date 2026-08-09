@@ -161,9 +161,8 @@ fn parseModifierTerm(term: []const u8, record: *Record) ParseError!bool {
     }
     if (std.ascii.eqlIgnoreCase(name, "exp")) {
         if (record.explanation != null) return error.DuplicateModifier;
-        // Validated as a domain-spec, and deliberately without the exp-only macro
-        // letters: c, r and t are allowed in the explanation *text* the modifier
-        // eventually resolves to, not in the name being resolved.
+        // `exp` validated as domain-spec, without exp-only macro letters (c, r, t):
+        // those are allowed in the resolved explanation text, not the name being resolved.
         try validateDomainSpec(value);
         record.explanation = value;
         return true;
