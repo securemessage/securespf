@@ -65,12 +65,10 @@ pub const Record = struct {
     }
 };
 
-/// Everything that makes a record syntactically invalid.
+/// SPF record syntax failures.
 ///
-/// Distinguished rather than collapsed into one error so that a future change can
-/// say *why* a record was rejected. RFC 7208 gives no way to carry that to the
-/// sender -- permerror has no reason field -- but the operator running the daemon
-/// still has to diagnose it, which is the same argument as D-17.
+/// The distinct errors preserve diagnostics even though SPF reports all as
+/// `permerror` to the sender.
 pub const ParseError = error{
     NotSpf1,
     UnknownMechanism,
@@ -568,11 +566,10 @@ pub fn parseIp4Arg(arg: []const u8) !struct { addr: [4]u8, prefix: u8 } {
     return .{ .addr = bytes, .prefix = prefix };
 }
 
-/// L-7: the strict RFC 4291 IPv6 parser lives in `securemilter-lib`
-/// (`securemilter.ip`) since 2026-08-08 -- MOVED, not copied, so the
-/// authorization path here and the config path in the library cannot
-/// disagree about what an address is. These aliases keep the call sites'
-/// spelling; the parser's own tests moved with it.
+/// Shared strict RFC 4291 address parsers.
+///
+/// One implementation keeps SPF authorization and configuration parsing
+/// consistent while preserving these call-site names.
 pub const parseIp6Bytes = securemilter.ip.parseIp6Bytes;
 pub const parseIp4Bytes = securemilter.ip.parseIp4Bytes;
 

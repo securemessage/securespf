@@ -187,15 +187,10 @@ test "parse and match ipv6" {
     try std.testing.expect(!wl.contains("2001:db9::1"));
 }
 
-// S-12. Both directions of the parser S-7 condemned, pinned against the
-// whitelist rather than against a record, because this is the file where a
-// wrong answer skips SPF evaluation altogether.
+// Whitelist entries and client addresses must use the same IPv6 grammar.
 
 test "S-12: a legal dotted-quad entry is kept, not silently dropped" {
-    // RFC 4291 2.2 form 3: a trailing dotted-quad is legal after ANY prefix.
-    // std.net.Ip6Address.parse rejects both of these as InvalidIpv4Mapping, and
-    // parseEntry discards what it cannot parse, so before S-12 an operator who
-    // wrote either of these got no entry and no message saying so.
+    // RFC 4291 §2.2 permits a dotted-quad suffix after any IPv6 prefix.
     var wl = try Whitelist.parse(std.testing.allocator,
         \\::1.1.1.1
         \\0:0:0:0:0:0:2.2.2.2

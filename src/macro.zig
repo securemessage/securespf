@@ -80,7 +80,7 @@ fn expandSpec(allocator: Allocator, spec: []const u8, ctx: *const Context) ![]u8
 
     const letter = std.ascii.toLower(spec[0]);
     const uppercase = std.ascii.isUpper(spec[0]);
-    _ = uppercase; // URL-encoding for uppercase is a SHOULD, skip for now
+    _ = uppercase; // RFC 7208 uppercase macro URL-escaping is not implemented
 
     // Parse optional digit count + reverse flag + delimiter chars
     var pos: usize = 1;
