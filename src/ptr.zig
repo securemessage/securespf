@@ -102,18 +102,10 @@ pub fn validatedNames(ev: Eval) EvalError!ValidatedNames {
     return out;
 }
 
-/// The value of the `%{p}` macro.
+/// Return the RFC 7208 §7.2 `%{p}` value from validated client names.
 ///
-/// RFC 7208 §7.2 builds it from the §5.5 validated names: prefer `domain` itself if
-/// it is among them, then a subdomain of `domain`, then any of them. With none, or
-/// on a DNS error, the value is the literal string "unknown".
-///
-/// §7.2 also says of this macro, in parentheses, "do not use". It costs a reverse
-/// lookup plus a forward confirmation per candidate, and the candidate list is
-/// chosen by whoever controls the reverse zone. It is implemented because a
-/// verifier does not get to ignore a macro a record actually uses.
-///
-/// Caller owns the returned memory.
+/// Prefer `domain`, then its subdomain, then any validated name; DNS failure or no
+/// validated name yields `"unknown"`. The caller owns the returned memory.
 pub fn validatedDomain(ev: Eval, domain: []const u8) EvalError![]u8 {
     var validated = validatedNames(ev) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

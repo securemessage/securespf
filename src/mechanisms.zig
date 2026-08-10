@@ -58,9 +58,8 @@ fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
 ///
 /// All domain-spec consumers use this function. The caller owns the result.
 pub fn expandDomainSpec(ev: Eval, domain: []const u8, template: []const u8) EvalError![]u8 {
-    // `%{p}` costs a reverse lookup and a forward confirmation per candidate, so it
-    // is resolved only when a template actually asks for it. Everything else in the
-    // macro set is derived from the context we already hold.
+    // `%{p}` costs reverse DNS and a forward confirmation per PTR candidate;
+    // resolve it only when a template requests it.
     var validated: ?[]u8 = null;
     defer if (validated) |v| ev.allocator.free(v);
     if (ptr.usesValidatedDomain(template)) {

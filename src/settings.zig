@@ -61,13 +61,8 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         }
     }
 
-    // Fallback: if no listener sections, listen on loopback only.
-    //
-    // Loopback, NOT 0.0.0.0. The milter protocol has no authentication, so anything
-    // that reaches this socket is trusted absolutely: it supplies the client IP,
-    // HELO and MAIL FROM that check_host() runs on, so a reachable port means an
-    // attacker chooses the inputs to the SPF decision and the Authentication-Results
-    // this host stamps from it. Postfix is the only intended client and it is local.
+    // Default to loopback: the milter protocol does not authenticate clients,
+    // and Postfix is the intended local client.
     if (addrs.items.len == 0) {
         try addrs.append(allocator, .{ .tcp = .{ .host = "127.0.0.1", .port = 8890 } });
     }
