@@ -94,13 +94,12 @@ pub const ParseError = error{
 /// check_host() produces the permerror result." A syntax error anywhere poisons
 /// the record.
 ///
-/// This used to validate lazily instead -- terms were accepted almost verbatim
-/// and the mechanism handlers did `catch return false` when they turned out to be
-/// malformed. At match time the only answer a handler can express is "does not
-/// match", so a broken term became a silently skipped one. That produced 45
-/// wrong verdicts in the RFC 7208 suite and one outright bypass: `v=spf1 include
-/// +all` has no `:domain` on the include, which is a syntax error, and skipping
-/// it left `+all` to authorize the world.
+/// Validating lazily instead -- accepting terms almost verbatim and letting the
+/// mechanism handlers `catch return false` when they turn out to be malformed --
+/// would be unsafe: at match time the only answer a handler can express is "does
+/// not match", so a broken term would become a silently skipped one. `v=spf1
+/// include +all` has no `:domain` on the include, which is a syntax error, and
+/// skipping it would leave `+all` to authorize the world.
 pub fn parseRecord(allocator: Allocator, txt: []const u8) ParseError!Record {
     var record = Record{
         .directives = .{},
@@ -207,7 +206,7 @@ fn isAllDigits(s: []const u8) bool {
 /// a range check alone misses: "0" stands alone, so anything longer must start
 /// 1-9 and a leading zero is a syntax error rather than another way to write the
 /// number, and the digit count itself is capped. `ip4:1.2.3.4/032` is invalid;
-/// treating it as 32 is what let it return pass.
+/// treating it as 32 would return pass for a malformed record.
 fn parseCidrLength(digits: []const u8, max: u8, max_digits: usize) ParseError!u8 {
     if (digits.len == 0 or digits.len > max_digits) return error.InvalidCidr;
     if (!isAllDigits(digits)) return error.InvalidCidr;
@@ -230,9 +229,9 @@ const DualCidr = struct {
 ///
 /// Scanned from the end, and accepted only when the tail really matches the cidr
 /// grammar, because a domain-spec may legitimately contain "/" -- macro-literal is
-/// %x21-24 / %x26-7E, which includes it. Splitting on the *first* "/" instead, as
-/// this code used to, truncates the domain of `a:foo/bar.example.com` and
-/// evaluates a name the record never named.
+/// %x21-24 / %x26-7E, which includes it. Splitting on the *first* "/" instead
+/// would truncate the domain of `a:foo/bar.example.com` and evaluate a name the
+/// record never named.
 fn splitDualCidr(term: []const u8) ParseError!DualCidr {
     var out = DualCidr{ .body = term };
 

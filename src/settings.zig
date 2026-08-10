@@ -135,18 +135,14 @@ fn freeTestConfig(spf_cfg: SpfConfig) void {
 
 // Both tests below keep `cfg` alive across their assertions on purpose. An address
 // from a `Socket =` line BORROWS its host string from the parsed config, so a helper
-// that parses and deinits in one call hands back a dangling pointer -- which is
-// exactly how the first version of the 0.0.0.0 test failed, comparing against freed
-// memory. The loopback case masked it, because "127.0.0.1" is a literal in the
-// fallback and survives the free.
+// that parses and deinits in one call would hand back a dangling pointer -- a
+// mistake the loopback case alone would not catch, because "127.0.0.1" is a
+// literal in the fallback and survives the free.
 
-// The implicit listener binds loopback, never 0.0.0.0.
-//
-// Until 2026-07-29 it bound 0.0.0.0 and nothing tested it -- this daemon had no
-// configuration test at all. The milter protocol authenticates nobody, so a
-// reachable port means an attacker supplies the client IP, HELO and MAIL FROM that
-// check_host() runs on, and therefore chooses the SPF result this host stamps.
-// Reachability IS authorization.
+// The implicit listener binds loopback, never 0.0.0.0: the milter protocol
+// authenticates nobody, so a reachable port means an attacker supplies the
+// client IP, HELO and MAIL FROM that check_host() runs on, and therefore
+// chooses the SPF result this host stamps. Reachability IS authorization.
 test "the implicit listener binds loopback, not every interface" {
     var cfg = try config_mod.parse(std.testing.allocator,
         \\[global]
@@ -190,9 +186,9 @@ test "an explicit 0.0.0.0 socket is still honoured" {
 
 // X-14. The pair of assertions that matter here are "it is an error" and
 // "the fallback did NOT fire". The second is the dangerous half: a silently
-// skipped listener left `addrs` empty, so the loopback default above took its
-// place and the daemon listened somewhere the operator never asked for while
-// reporting a successful start.
+// skipped listener would leave `addrs` empty, so the loopback default above
+// would take its place and the daemon would listen somewhere the operator
+// never asked for while reporting a successful start.
 test "a malformed listener Socket is refused, not replaced by the default" {
     var cfg = try config_mod.parse(std.testing.allocator,
         \\[global]
@@ -206,9 +202,9 @@ test "a malformed listener Socket is refused, not replaced by the default" {
     try std.testing.expectError(error.InvalidListenerSocket, parseSpfConfig(std.testing.allocator, &cfg));
 }
 
-// A hostname is the likeliest form of this mistake, and it used to parse
-// cleanly and fail later inside a worker thread, where the only response
-// available was to log and let that thread die.
+// A hostname is the likeliest form of this mistake; accepting it here would
+// let it parse cleanly and fail later inside a worker thread, where the only
+// response available is to log and let that thread die.
 test "a hostname in Socket is refused at config time" {
     var cfg = try config_mod.parse(std.testing.allocator,
         \\[global]

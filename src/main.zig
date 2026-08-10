@@ -172,9 +172,7 @@ fn runDaemon() !void {
 
     // Daemonize, block signals, start the monitor thread, claim the PID file, raise
     // the fd budget, drop privileges — in that order, for reasons recorded once in
-    // `daemon.bootstrap` and enforced by its ordering tests. This was 40 lines here
-    // and in each of the other three daemons, with X-7's constraint restated as a
-    // comment in all four.
+    // `daemon.bootstrap` and enforced by its ordering tests.
     var boot = try bootstrap_mod.run(.{
         .foreground = spf_cfg.foreground,
         .pid_file = spf_cfg.pid_file,

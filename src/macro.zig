@@ -331,10 +331,10 @@ test "expand ipv6 client ip as nibbles" {
 }
 
 test "S-12: %{i} expands a dotted-quad-suffixed client address" {
-    // RFC 4291 2.2 form 3. `std.net.Ip6Address.parse` rejects this as
-    // InvalidIpv4Mapping, and the fallback hands back the address unexpanded --
-    // so `exists:%{i}._spf.example.com` queried a name containing colons rather
-    // than the 32 nibbles 7.3 requires, and the lookup could only ever miss.
+    // RFC 4291 §2.2 form 3. A parser that rejected this form and fell back to
+    // handing back the address unexpanded would make
+    // `exists:%{i}._spf.example.com` query a name containing colons rather
+    // than the 32 nibbles §7.3 requires, and the lookup could only ever miss.
     const ctx = Context{
         .sender = "user@example.com",
         .domain = "example.com",

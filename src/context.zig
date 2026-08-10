@@ -167,11 +167,9 @@ pub fn noRecord(arrival: Arrival) EvalError!spf.Result {
 
 /// The four values every mechanism needs, bound once for the whole evaluation.
 ///
-/// Each `match*` used to take `(allocator, resolver, ctx, domain, directive, state)`.
-/// Six parameters, of which four never vary across a single `check_host()` — and
-/// `matchExists` listed those four in a **different order** from its five siblings,
-/// so the convention a reader relies on was already broken. The types differed
-/// enough that a swap would not compile, which is luck rather than a design.
+/// Four of the six parameters a `match*` function needs never vary across a
+/// single `check_host()`, so they are grouped here rather than passed
+/// individually; every `match*` function then takes them in the same order.
 ///
 /// Passed by value: it is four words, and every field is either a pointer or an
 /// allocator, so copying it copies no state. `state` stays a pointer because the term
@@ -187,20 +185,17 @@ pub const Eval = struct {
 
 /// Accounting for one evaluation.
 ///
-/// This was a bare `*usize` threaded through every mechanism, which put the
-/// burden on each DNS-issuing site to remember both to increment it and to
-/// compare it against the limit — and gave the void-lookup count nowhere to
-/// live at all. Every query now goes through `query()`, so a mechanism added
-/// later is accounted for whether or not its author thought about limits.
+/// Every DNS query a mechanism issues goes through `query()`, which charges
+/// the term and void-lookup budgets itself, so a mechanism is accounted for
+/// whether or not its author thought about limits.
 pub const EvalState = struct {
     limits: Limits,
     /// DNS-querying terms consumed so far.
     terms: usize = 0,
     /// Terms whose lookup found nothing.
     void_lookups: usize = 0,
-    /// The X-21 deadline, as the library's type since 2026-08-08: the same
-    /// bound the other three daemons now share, rather than a local copy of
-    /// the arithmetic.
+    /// The X-21 deadline, the same bound type the other daemons in this suite
+    /// share.
     deadline: deadline_mod.Deadline,
 
     pub fn init(limits: Limits) EvalState {
@@ -412,9 +407,9 @@ test "a missing record is none at the checked domain and permerror at a target" 
 
 test "term budget is not spent on records inside one mechanism" {
     // The mx and ptr mechanisms have their own 10-record allowance, and the
-    // sub-queries they issue go through querySub, which charges no term. The
-    // pre-S-2 code charged each MX host to the term budget instead, so a domain
-    // with ten MX hosts permerrored on a single valid mechanism.
+    // sub-queries they issue go through querySub, which charges no term.
+    // Charging each MX host to the term budget instead would permerror a
+    // domain with ten MX hosts on a single valid mechanism.
     var state = EvalState.init(.{});
     try state.chargeTerm(); // the `mx` term itself
     try std.testing.expectEqual(@as(usize, 1), state.terms);

@@ -67,16 +67,16 @@ pub fn doEval(conn: *connection_mod.Connection, ctx: MsgCtx) u8 {
 
     // REFUSE TO EVALUATE WITHOUT A USABLE ADDRESS.
     //
-    // This used to substitute the literal string "unknown" and hand it to the
-    // evaluator. Nothing downstream rejected the substitution: every mechanism
-    // that inspects the client address parses it with `catch return false` --
-    // `matchIp4`, `matchIp6`, `matchA` and `matchMx` in mechanisms.zig, and
-    // `validatedNames` in ptr.zig -- so a value that is
-    // not an address matched nothing, evaluation ran on to the terminal `-all`,
-    // and this daemon published spf=fail -- an affirmative claim that the domain
-    // DENIES this sender, asserted from an input that never existed. Under a
-    // DMARC p=reject policy that rejects legitimate mail while recording a false
-    // denial. RFC 7208 SS4.3 calls for permerror when input cannot be interpreted.
+    // Substituting a placeholder string (e.g. "unknown") and handing it to the
+    // evaluator would not be rejected downstream: every mechanism that inspects
+    // the client address parses it with `catch return false` -- `matchIp4`,
+    // `matchIp6`, `matchA` and `matchMx` in mechanisms.zig, and `validatedNames`
+    // in ptr.zig -- so a value that is not an address matches nothing,
+    // evaluation runs on to the terminal `-all`, and this daemon would publish
+    // spf=fail -- an affirmative claim that the domain DENIES this sender,
+    // asserted from an input that never existed. Under a DMARC p=reject policy
+    // that rejects legitimate mail while recording a false denial. RFC 7208
+    // §4.3 calls for permerror when input cannot be interpreted.
     if (client_addr_opt == null or !isIpAddress(client_addr_opt.?)) {
         // A connection with no network peer at all -- a unix-socket or stdin
         // submission -- is not an error, SPF simply does not apply to it. An
@@ -207,13 +207,12 @@ fn stripAngleBrackets(addr: []const u8) []const u8 {
 
 /// Record the SPF result on the message.
 ///
-/// Every failure here used to be swallowed -- two `catch return continue` and a
-/// `writePacket ... catch {}` followed unconditionally by `return accept`. The
-/// message was then delivered with **no `spf=` field** while this daemon
-/// reported success, and `securedmarc` went on to compute a DMARC verdict from
-/// the evidence that survived. A message that would have passed on an aligned
-/// SPF pass could be rejected under `p=reject` because this host could not
-/// allocate a header (audit X-9).
+/// Must stay fallible (audit X-9): swallowing a failure and returning `accept`
+/// unconditionally would deliver the message with **no `spf=` field** while
+/// this daemon reported success, and `securedmarc` would go on to compute a
+/// DMARC verdict from the evidence that survived. A message that would have
+/// passed on an aligned SPF pass could then be rejected under `p=reject`
+/// because this host could not allocate a header.
 ///
 /// A local fault is not charged to the sender: if the result cannot be recorded,
 /// the message is deferred and the sender retries.
@@ -265,10 +264,11 @@ fn publishEvent(
     result_str: []const u8,
     domain: []const u8,
 ) void {
-    // Every value but `result_str` comes from the sender or from rDNS. A bare
-    // `"` in any of them used to end the JSON string early and leave the rest of
-    // the payload to be reinterpreted, so the consumer -- SecureMessageWebhooks
-    // -- received either invalid JSON or fields the sender chose (audit X-5).
+    // Every value but `result_str` comes from the sender or from rDNS. An
+    // unescaped `"` in any of them would end the JSON string early and leave
+    // the rest of the payload to be reinterpreted, so the consumer --
+    // SecureMessageWebhooks -- would receive either invalid JSON or fields the
+    // sender chose (audit X-5).
     //
     // Escaped rather than substituted, because an event is machine-read: the
     // consumer must receive the value this daemon actually saw.
@@ -359,9 +359,10 @@ test "the A-R stamp records smtp.client-ip, quoted for IPv6, omitted when absent
 
 // X-9: this wrapper must stay fallible.
 //
-// The defect was a stamping path that swallowed every failure and returned
-// `accept`, delivering the message with no `spf=` field while reporting success.
-// `securedmarc` then computed a DMARC verdict from the evidence that survived.
+// A stamping path that swallowed every failure and returned `accept` would
+// deliver the message with no `spf=` field while reporting success, and
+// `securedmarc` would then compute a DMARC verdict from the evidence that
+// survived.
 //
 // A regression would look like a `catch return continue` reappearing inside
 // `addArHeader` and the signature going back to `u8`, which is invisible in

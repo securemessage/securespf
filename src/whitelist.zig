@@ -205,9 +205,10 @@ test "S-12: a legal dotted-quad entry is kept, not silently dropped" {
 
 test "S-12: a malformed entry is rejected, not repaired into a different range" {
     // ":CAFE::" has one leading colon, which is illegal -- only "::" may begin
-    // an address. std.net accepts it and returns "::", so the /32 an operator
-    // believed they were whitelisting became a different /32 containing the
-    // unspecified address. Fails open, which is the direction that matters.
+    // an address. A lenient parser that accepted it and returned "::" would
+    // turn the /32 an operator believes they are whitelisting into a
+    // different /32 containing the unspecified address, which fails open --
+    // the dangerous direction this test guards against.
     var wl = try Whitelist.parse(std.testing.allocator,
         \\:CAFE::/32
         \\:1:2:3:4:5:6:7

@@ -135,9 +135,9 @@ pub fn matchMx(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError
     const rtype: dns.RecordType = if (ev.ctx.is_ipv6) .AAAA else .A;
 
     // RFC 7208 §4.6.4 caps the records examined *inside* one `mx` at 10, as a
-    // separate budget from the 10 terms. The previous code charged each MX host
-    // to the term budget instead, so a domain with ten MX hosts spent the whole
-    // evaluation allowance on a single valid mechanism.
+    // separate budget from the 10 terms. Charging each MX host to the term
+    // budget instead would spend the whole evaluation allowance on a domain
+    // with ten MX hosts, permerroring a single valid mechanism.
     var records: usize = 0;
 
     for (mx_result.answers) |ans| {

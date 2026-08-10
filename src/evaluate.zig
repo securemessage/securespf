@@ -84,9 +84,9 @@ pub fn evaluateWithLimits(
     }
     // The parameter is the one with the awkward name so that `ctx` -- the name
     // every line below reaches for by reflex -- is the corrected context. Zig
-    // cannot shadow a parameter, and an earlier draft of this function did leave
-    // one call site reading the un-normalized address, which silently undid the
-    // whole fix.
+    // cannot shadow a parameter, so this rename is what keeps a call site from
+    // reading the un-normalized address and silently undoing the mapped-IPv4
+    // fix above.
     const ctx = &normalized;
 
     // Determine check domain: from MAIL FROM or fall back to HELO
@@ -200,8 +200,8 @@ fn matchDirective(ev: Eval, domain: []const u8, directive: spf.Directive) EvalEr
 /// The result table is not "pass or bust": a `temperror` inside the included
 /// record has to surface as a `temperror` for the whole check, and a target with
 /// no usable record is a permerror. Collapsing all of that to `result == .pass`
-/// meant an outage at an included provider read as "did not match", so the
-/// evaluation walked on to the sender's own `-all` and rejected the mail.
+/// would make an outage at an included provider read as "did not match", so
+/// the evaluation would walk on to the sender's own `-all` and reject the mail.
 fn matchInclude(ev: Eval, domain: []const u8, directive: spf.Directive) EvalError!bool {
     const template = directive.argument orelse return false;
     try ev.state.chargeTerm();
