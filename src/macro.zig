@@ -103,11 +103,7 @@ fn expandSpec(allocator: Allocator, spec: []const u8, ctx: *const Context) ![]u8
         pos += 1;
     }
 
-    // Parse delimiter(s) — RFC 7208 §7.1: "." / "-" / "+" / "," / "/" / "_" / "="
-    //
-    // The grammar is `*delimiter`, plural, and *every* character listed splits the
-    // value: `%{l2r+-}` splits on both "+" and "-". Honouring only the first, as
-    // this did, silently changed which parts the transformers then saw.
+    // RFC 7208 §7.1 permits multiple delimiters; each splits the value.
     if (pos < spec.len) {
         for (spec[pos..]) |ch| {
             if (!isDelimiter(ch)) return error.InvalidMacro;
@@ -171,14 +167,8 @@ fn expandClientIp(allocator: Allocator, ctx: *const Context) ![]u8 {
         return allocator.dupe(u8, ctx.client_ip);
     }
 
-    // RFC 7208 §7.3: IPv6 → expand to 32 dot-separated nibble characters
-    // Parse the colon-hex address into 16 bytes, then emit each nibble
-    //
-    // `spf.parseIp6Bytes` rather than `std.net.Ip6Address.parse` (S-7, S-12).
-    // The fallback below returns the address unexpanded, which is not a legal
-    // %{i} expansion, so every literal the stdlib parser rejects produced a
-    // macro-bearing query for a name no zone can hold -- and `::1.1.1.1` is a
-    // literal it rejects and RFC 4291 2.2 permits.
+    // RFC 7208 §7.3 expands IPv6 to 32 dot-separated nibbles. Use the shared
+    // RFC 4291 parser, which accepts legal dotted-quad forms.
     const bytes = spf.parseIp6Bytes(ctx.client_ip) catch
         return allocator.dupe(u8, ctx.client_ip);
 

@@ -1,15 +1,4 @@
-//! SecureSPF configuration: the `SpfConfig` value and the parser that turns an
-//! INI file into one.
-//!
-//! Split out of `main.zig` at stage 4.3 of the refactor plan, following the
-//! decomposition `securearc` already uses (`settings.zig`, `flow.zig`) and that
-//! `securedkim` took at 11.48. Nothing in here touches the daemon's global state,
-//! which is the property that made the move possible: the whole layer is pure
-//! parsing and is reachable from a test without a listener, a worker or a
-//! resolver.
-//!
-//! `main.zig` re-exports every name at its old spelling, so the move is not a
-//! rename at any call site.
+//! SecureSPF INI parsing and runtime configuration.
 
 const std = @import("std");
 const mem = std.mem;

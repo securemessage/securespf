@@ -1,12 +1,6 @@
-//! The SPF mechanisms that test the connection — RFC 7208 §5 — and the
-//! domain-spec expansion every one of them goes through first.
+//! RFC 7208 §5 mechanisms that test the connection and expand domain-specs.
 //!
-//! `include` is deliberately **not** here. §5.2 defines it as a recursive
-//! `check_host()`, not as a test on the connection, so it lives beside the
-//! recursive walk in `evaluate.zig` together with the dispatch that reaches it.
-//! That asymmetry is the specification's, not an accident of layout, and it is
-//! also what keeps this file at the bottom of a DAG: if `include` were here, this
-//! file would have to import the evaluator that imports it.
+//! Recursive `include` handling remains with `check_host()` in `evaluate.zig`.
 
 const std = @import("std");
 const mem = std.mem;
@@ -62,19 +56,7 @@ fn matchIp6Cidr(client: [16]u8, network: [16]u8, prefix_len: u8) bool {
 
 /// Expand a domain-spec against the evaluation context.
 ///
-/// **Every** term carrying a domain-spec goes through here: `a`, `mx`, `ptr`,
-/// `exists`, `include` and `redirect`. Only `exists` used to expand, so the other
-/// five queried the macro's literal characters -- `a:%{H}` looked up the name
-/// "%{H}" and `redirect=%{d}.d.spf.example.com` the name "%{d}.d.spf.example.com".
-/// The name resolved was never the name the record named.
-///
-/// This is the fifth rule found implemented in several places and honoured in only
-/// some, after D-1, A-5, D-15 and the macro-less mechanisms above, which is why
-/// there is one function rather than six call sites. Two of those six callers --
-/// `include` and `redirect` -- are in `evaluate.zig`, which is why this is `pub`:
-/// the point of the function is that there is exactly one of it.
-///
-/// Caller owns the returned memory.
+/// All domain-spec consumers use this function. The caller owns the result.
 pub fn expandDomainSpec(ev: Eval, domain: []const u8, template: []const u8) EvalError![]u8 {
     // `%{p}` costs a reverse lookup and a forward confirmation per candidate, so it
     // is resolved only when a template actually asks for it. Everything else in the

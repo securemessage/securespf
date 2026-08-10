@@ -1,13 +1,6 @@
-//! Validated domain names for the client address — RFC 7208 §5.5 and §7.2.
+//! RFC 7208 §5.5 validated client names for `ptr` and `%{p}`.
 //!
-//! One procedure with two callers that look unrelated: the `ptr` mechanism (§5.5)
-//! and the `%{p}` macro (§7.2), which the RFC defines *in terms of* §5.5 rather
-//! than describing separately. Keeping them in one file is what stops the two
-//! drifting — a validation rule honoured in one place and not the other is the
-//! shape of D-1, A-5, D-15 and the macro-less mechanisms fixed alongside them.
-//!
-//! Depends only on the shared vocabulary in `context.zig`, so it sits at the
-//! bottom of the module graph with nothing importing back into it.
+//! Both callers share the same reverse-and-forward DNS confirmation path.
 
 const std = @import("std");
 const mem = std.mem;
@@ -57,17 +50,10 @@ pub const ValidatedNames = struct {
     }
 };
 
-/// Collect the client address's validated domain names, per RFC 7208 §5.5.
+/// Collect RFC 7208 §5.5-validated client names.
 ///
-/// A PTR name counts only once its forward lookup, in the address family the
-/// connection actually used, contains the connecting address. The reverse zone is
-/// controlled by whoever holds the address, so the PTR names are candidates and
-/// nothing more until confirmed -- skipping the confirmation would let an address
-/// owner claim any name.
-///
-/// §5.5 caps the names examined at 10, which is a budget separate from the term
-/// count: without it a reverse zone returning hundreds of names would buy hundreds
-/// of forward confirmations off a single mechanism.
+/// Each PTR candidate requires a forward confirmation in the connection's address
+/// family; the mechanism record limit bounds candidates.
 pub fn validatedNames(ev: Eval) EvalError!ValidatedNames {
     var out = ValidatedNames{ .allocator = ev.allocator };
     errdefer out.deinit();

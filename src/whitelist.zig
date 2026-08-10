@@ -49,11 +49,7 @@ pub const Whitelist = struct {
             if (parseEntry(line)) |entry| {
                 try entries.append(allocator, entry);
             } else {
-                // A line that does not parse used to vanish here. An operator
-                // who mistypes an entry is left believing a host bypasses SPF
-                // when it does not, and nothing anywhere says otherwise -- so
-                // the failure is only ever discovered as mail being checked
-                // that was meant to be trusted (S-12).
+                // Report invalid entries instead of silently omitting them.
                 log.warn("whitelist: ignoring unparseable entry {s}", .{line});
             }
         }
@@ -85,10 +81,7 @@ pub const Whitelist = struct {
                 }
             }
         } else {
-            // `spf.parseIp6Bytes`, not `net.Ip6Address.parse`: the entry was
-            // parsed by the strict grammar, so the address being matched
-            // against it has to be too, or the two disagree about which
-            // address this is (S-7, S-12).
+            // Use the same RFC 4291 parser for entries and matched addresses.
             const client = spf.parseIp6Bytes(ip_str) catch return false;
             for (self.entries) |entry| {
                 switch (entry) {
@@ -119,14 +112,7 @@ fn parseEntry(line: []const u8) ?Entry {
 
     if (is_v6) {
         const addr_str = if (slash) |s| line[0..s] else line;
-        // S-7 recorded that `std.net.Ip6Address.parse` is wrong in both
-        // directions and replaced it in `spf.zig`; this call site was not
-        // converted with it. Both halves of that defect land harder here than
-        // in a record. It rejects `::1.1.1.1`, legal under RFC 4291 2.2 form 3,
-        // so a correct entry was dropped -- which at least fails closed. And it
-        // accepts `:CAFE::/32`, whose single leading colon is illegal, silently
-        // returning `::` -- so the operator enforces a range they never wrote,
-        // in a file whose entries skip SPF evaluation completely (S-12).
+        // Parse IPv6 whitelist entries with the shared RFC 4291 grammar.
         const parsed = spf.parseIp6Bytes(addr_str) catch return null;
         if (slash) |s| {
             const prefix = std.fmt.parseInt(u8, line[s + 1 ..], 10) catch return null;
