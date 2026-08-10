@@ -26,16 +26,15 @@ SecureSPF implements RFC 7208 (Sender Policy Framework) as a milter that integra
 # Build
 zig build
 
-# Create user and directories
-pw useradd _spf -d /nonexistent -s /usr/sbin/nologin
+# Create directories (mailnull is the shared FreeBSD milter account other
+# milters already run as -- no dedicated user needed)
 mkdir -p /var/run/securespf /usr/local/etc/securespf
-chown _spf:_spf /var/run/securespf
 
 # Write config
 cat > /usr/local/etc/securespf/securespf.conf << 'EOF'
 [global]
 AuthservID      = mail.example.com
-User            = _spf
+User            = mailnull
 PidFile         = /var/run/securespf/securespf.pid
 DnsNameserver   = 127.0.0.1
 

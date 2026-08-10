@@ -41,7 +41,7 @@ PidFile         = /var/run/securespf/securespf.pid
 # The optional group is what makes a shared unix socket work -- name the group
 # the MTA runs in and set UMask below, and the socket is reachable by Postfix
 # and by nothing else.
-User            = _spf
+User            = mailnull
 
 # File-creation mask for the PID file and any unix-domain listener.
 #
