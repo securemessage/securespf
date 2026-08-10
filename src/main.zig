@@ -181,6 +181,7 @@ fn runDaemon() !void {
         .worker_threads = spf_cfg.worker_threads,
         .max_connections = spf_cfg.max_connections,
         .num_listeners = @intCast(spf_cfg.listen_addresses.len),
+        .listen_addresses = spf_cfg.listen_addresses,
         .spawn_threads = spawnHealthMonitor,
     });
     defer boot.deinit();
