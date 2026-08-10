@@ -1,11 +1,7 @@
-//! The vocabulary of one SPF evaluation: what is being checked, what may bound
-//! it, how it can end early, and the accounting shared by every mechanism.
+//! Shared SPF evaluation context, limits, errors, and DNS accounting.
 //!
-//! Split out of `evaluate.zig` so the module graph is a DAG rather than a cycle.
-//! `mechanisms.zig` and `ptr.zig` both need these types; if they lived beside the
-//! recursive evaluator, both would have to import the file that imports them.
-//! Nothing here evaluates anything — the RFC 7208 §4 walk is in `evaluate.zig`
-//! and the §5 mechanisms are in `mechanisms.zig`.
+//! Kept separate from the recursive evaluator so mechanisms and PTR handling
+//! can depend on these types without an import cycle.
 
 const std = @import("std");
 const mem = std.mem;
@@ -39,23 +35,11 @@ pub const EvalResult = struct {
     /// The sender's own `exp=` text (RFC 7208 §6.2), meant for the SMTP
     /// rejection message. Not the same thing as `reason`.
     explanation: ?[]const u8,
-    /// Why the evaluation ended early, when it did.
-    ///
-    /// A bare `spf=permerror` is four different faults wearing the same label:
-    /// a malformed record, a term-limit blowout, a void-lookup blowout, and an
-    /// `include` pointing at a domain with no policy. They need four different
-    /// conversations — one with the sender, one with nobody — and the log line is
-    /// where an operator looks to find out which. Always a static string, so it
-    /// is safe to log verbatim and needs no lifetime management.
+    /// Static diagnostic for an early evaluation result.
     reason: ?[]const u8 = null,
 };
 
-/// Bounds on a single SPF evaluation.
-///
-/// The processing limits in RFC 7208 §4.6.4 exist because an SPF record is a
-/// program supplied by the sender: `include` and `redirect` are calls, and a
-/// hostile or merely broken record can otherwise direct a receiver to make an
-/// unbounded number of DNS queries per message.
+/// Bounds for a single SPF evaluation.
 pub const Limits = struct {
     /// DNS-querying terms per evaluation. RFC 7208 §4.6.4 fixes this at 10 and
     /// the value is not configurable, because it is what senders design against.

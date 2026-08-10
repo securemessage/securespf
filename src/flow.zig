@@ -1,20 +1,7 @@
-//! What happens at end-of-message: decide an SPF result and record it.
+//! End-of-message SPF evaluation, stamping, and event publishing.
 //!
-//! Split out of `main.zig` at stage 4.3 of the refactor plan, the same seam
-//! `securearc` took. The seam is ownership of state: this module decides and
-//! stamps, `main.zig` owns the daemon's configuration and hands down a snapshot
-//! of it.
-//!
-//! Nothing here reads global state. That is the property that made the move
-//! possible and it is worth keeping: the address gate, the whitelist short
-//! circuit and the A-R stamping path are all reachable from a test without a
-//! running daemon.
-//!
-//! `MsgCtx` is defined here but *constructed* in `main.zig`. That split is
-//! deliberate and is the same one `securearc/src/flow.zig` documents: a
-//! constructor here would have to reach back into `main.zig` for the globals,
-//! making the two files circular. Keeping construction where the globals live
-//! means this module needs no import of its parent at all.
+//! `main.zig` supplies a configuration snapshot through `MsgCtx`; this module
+//! does not read daemon globals.
 
 const std = @import("std");
 const mem = std.mem;
@@ -54,18 +41,7 @@ pub const MsgCtx = struct {
     /// while this runs (see securemilter rcu.zig).
     whitelist: ?*const whitelist_mod.Whitelist,
 
-    /// This worker's resolver and publisher, fetched ON DEMAND.
-    ///
-    /// Accessors rather than the `*Resolver` and `*Publisher` that
-    /// `securearc`'s `MsgCtx` carries directly, and the difference is not
-    /// stylistic. securearc validates a chain on every message, so its resolver
-    /// is always used. This daemon reaches DNS only *after* two early returns —
-    /// the address gate and the whitelist short circuit — and publishes on two
-    /// of the three paths. Both underlying getters build their value lazily and
-    /// cache it thread-locally, so taking them eagerly here would construct a
-    /// DNS resolver with its TTL cache, and open a ZMQ socket, on a worker
-    /// thread that handles nothing but whitelisted mail. That is a real
-    /// behaviour change, and this extraction is meant to be a move.
+    /// Lazy per-thread resolver and publisher accessors.
     resolver: *const fn () *dns_mod.Resolver,
     publisher: *const fn () *zmq.Publisher,
 };

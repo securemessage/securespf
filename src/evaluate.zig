@@ -1,18 +1,7 @@
-//! `check_host()` — the recursive RFC 7208 §4 evaluation.
+//! Recursive RFC 7208 §4 `check_host()` evaluation.
 //!
-//! This file holds the walk itself: fetch a domain's record, try each directive
-//! in order, follow `redirect`, and turn an early exit into a result. The three
-//! files below it hold the parts that walk depends on:
-//!
-//!   - `context.zig` — the evaluation vocabulary and the DNS/limit accounting
-//!   - `mechanisms.zig` — RFC 7208 §5, the mechanisms that test the connection
-//!   - `ptr.zig` — §5.5 validated names, shared with the §7.2 `%{p}` macro
-//!
-//! `include` and the directive dispatch stay here rather than in `mechanisms.zig`,
-//! because §5.2 makes `include` a recursive `check_host()` rather than a test on
-//! the connection. Keeping it beside the recursion puts every entry into the walk
-//! in one file, and keeps the module graph a DAG — the mechanisms can be read
-//! without the evaluator, which is not true in reverse.
+//! Fetches SPF records, evaluates directives, follows redirects, and maps
+//! evaluation errors to SPF results.
 
 const std = @import("std");
 const mem = std.mem;
@@ -83,18 +72,8 @@ pub fn evaluateWithLimits(
     raw_ctx: *const EvalContext,
     limits: Limits,
 ) EvalResult {
-    // RFC 7208 §5: "IP4 mapped IP6 connections MUST be treated as IP4".
-    //
-    // Done once here rather than inside each mechanism, because the requirement
-    // is about the connection and so reaches everything downstream: `ip4:` has to
-    // compare against the embedded address, `ip6:` must not match at all, `a` and
-    // `mx` have to fetch A records rather than AAAA, an ip6-cidr-length stops
-    // applying, and `%{i}`/`%{v}` have to expand in their IPv4 forms. Patching
-    // the mechanisms individually would be the same one-rule-in-many-places
-    // mistake that produced D-1, A-5 and D-15.
-    //
-    // The buffer lives for the whole evaluation because every caller below
-    // borrows `client_ip` rather than copying it.
+    // RFC 7208 §5 requires IPv4-mapped IPv6 clients to be evaluated as IPv4.
+    // Normalize once so all mechanisms and macros use the same address.
     var mapped_buf: [ip4_text_max]u8 = undefined;
     var normalized = raw_ctx.*;
     if (raw_ctx.is_ipv6) {
