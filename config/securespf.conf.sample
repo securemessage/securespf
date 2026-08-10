@@ -18,9 +18,16 @@ StripAuthResults = yes
 # Number of worker threads. 0 = auto-detect CPU count.
 WorkerThreads   = 0
 
+# Maximum simultaneous connections accepted by each worker thread.
+# Default: 256.
+# MaxConnections = 256
+
 # Syslog logging.
 Syslog          = yes
 SyslogFacility  = mail
+
+# Logging verbosity: err, warn, info, debug.
+# LogLevel      = info
 
 # PID file location.
 PidFile         = /var/run/securespf/securespf.pid
@@ -61,6 +68,12 @@ User            = _spf
 DnsNameserver   = 127.0.0.1
 DnsTimeout      = 5
 DnsRetries      = 2
+
+# Maximum entries in the per-worker DNS cache, and the TTL in seconds applied
+# to negative answers (NXDOMAIN, SERVFAIL) so a lookup that just failed is not
+# retried on every message.
+# DnsCacheSize    = 1000
+# DnsNegativeTTL  = 60
 
 # --- Resource limits on attacker-controlled message content ---
 #
@@ -107,6 +120,9 @@ DnsRetries      = 2
 # ZMQ event publishing endpoint (optional).
 # If not set, events are silently dropped.
 # ZmqEndpoint   = tcp://events.internal:5555
+
+# ZeroMQ topic prefix events are published under. Default: spf.result.
+# ZmqTopic      = spf.result
 
 # Loopback. "inbound" describes the mail, not this socket: the client is always the
 # local Postfix. The milter protocol has no authentication, so anything that can
