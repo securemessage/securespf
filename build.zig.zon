@@ -1,6 +1,6 @@
 .{
     .name = .securespf,
-    .version = "0.6.1",
+    .version = "0.6.2",
     .fingerprint = 0x42e5067db2bb3d2,
     .minimum_zig_version = "0.15.0",
     .paths = .{
@@ -13,8 +13,8 @@
     },
     .dependencies = .{
         .securemilter = .{
-            .url = "https://pacyworld.dev/securemessage/securemilter-lib/archive/v0.4.0.tar.gz",
-            .hash = "securemilter_lib-0.4.0-IbMuLMNIBgBKML1GaLomJz7RYXq8Cx_zRF6zgKLtbYr1",
+            .url = "https://pacyworld.dev/securemessage/securemilter-lib/archive/v0.5.0.tar.gz",
+            .hash = "securemilter_lib-0.5.0-IbMuLIdYBgDkEFPMw0Ljic0E72eVSanLG-bqI8_jk4tQ",
         },
     },
 }
