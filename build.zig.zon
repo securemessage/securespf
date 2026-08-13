@@ -1,6 +1,6 @@
 .{
     .name = .securespf,
-    .version = "0.6.4",
+    .version = "0.6.5",
     .fingerprint = 0x42e5067db2bb3d2,
     .minimum_zig_version = "0.15.0",
     .paths = .{
