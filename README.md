@@ -98,11 +98,18 @@ milter_connect_macros = j {daemon_name} v {client_addr}
 milter_default_action = accept
 ```
 
-> **Important**: `{client_addr}` in `milter_connect_macros` is required for SecureSPF to see the SMTP client IP.
+> **Note**: `{client_addr}` in `milter_connect_macros` is not strictly required
+> on a stock single-`smtpd` Postfix install; SecureSPF falls back to the
+> milter protocol's own `SMFIC_CONNECT` payload when the macro is absent. It
+> **is** required if your mail passes through more than one `smtpd` process
+> (e.g. a `content_filter` re-injecting via `XCLIENT`), because only the macro
+> still carries the original client address at that point. Setting it is
+> always safe, so the example above sets it unconditionally.
 
 ### Milter Chain Ordering
 
-When using the full SecureMilter suite:
+When using the full SecureMilter suite with SecureDMARC in its default
+stamp-only mode:
 
 ```ini
 smtpd_milters = inet:127.0.0.1:8890,
@@ -112,6 +119,11 @@ smtpd_milters = inet:127.0.0.1:8890,
 ```
 
 Order: **SPF (8890) → DKIM (8891) → DMARC (8894) → ARC (8895)**
+
+If you enable SecureDMARC's `Enforcement` with a `TrustedSealersFile`
+override, SecureARC's *verify* step must run **before** SecureDMARC instead;
+see [securedmarc's README](https://pacyworld.dev/securemessage/securedmarc#milter-chain-ordering)
+for that ordering and why it differs.
 
 ## CLI Tool
 
