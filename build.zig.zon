@@ -13,8 +13,8 @@
     },
     .dependencies = .{
         .securemilter = .{
-            .url = "https://pacyworld.dev/securemessage/securemilter-lib/archive/v0.5.2.tar.gz",
-            .hash = "securemilter_lib-0.5.2-IbMuLHfwBgCFwOeUeAIJ8q2Diw2FJ9T-tlxe3wjIstgI",
+            .url = "https://pacyworld.dev/securemessage/securemilter-lib/archive/v0.5.4.tar.gz",
+            .hash = "securemilter_lib-0.5.4-IbMuLMcXBwCt9z-PtQVxq9m1sN0HqD9IcZFKY3eXI3se",
         },
     },
 }

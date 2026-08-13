@@ -7,6 +7,7 @@ const Allocator = mem.Allocator;
 const securemilter = @import("securemilter");
 const config_mod = securemilter.config;
 const listener_mod = securemilter.listener;
+const log = securemilter.log;
 const connection_mod = securemilter.connection;
 const worker_mod = securemilter.worker;
 
@@ -38,7 +39,35 @@ pub const SpfConfig = struct {
 };
 
 /// Parse the SecureSPF config from a loaded Config.
+/// Known configuration keys; anything else refuses startup. A key no table
+/// knows is a typo, and a known global key inside a listener section is
+/// silently inert — both reached production as real operator mistakes.
+const known_global_keys: []const []const u8 = &(config_mod.base_global_keys ++ [_][]const u8{
+    "AuthservID",        "WorkerThreads",  "MaxConnections",   "PidFile",
+    "User",              "UMask",          "Foreground",       "DnsNameserver",
+    "DnsTimeout",        "DnsRetries",     "DnsCacheSize",     "DnsNegativeTTL",
+    "ZmqEndpoint",       "ZmqTopic",       "StripAuthResults", "WhitelistFile",
+    "TrustedRelaysFile", "MaxVoidLookups", "MaxEvaluationMs",
+});
+const known_listener_keys = [_][]const u8{"Socket"};
+
 pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfConfig {
+    if (config_mod.validateKeys(cfg, known_global_keys, &known_listener_keys)) |offense| {
+        // stderr as well as the log: this fires before the logger is
+        // initialized, and an operator message that only reaches an unopened
+        // syslog socket is silent by another name.
+        switch (offense.kind) {
+            .unknown => {
+                log.err("config: [{s}] unrecognized key \"{s}\" (typo?); refusing to start", .{ offense.section, offense.key });
+                std.debug.print("config: [{s}] unrecognized key \"{s}\" (typo?); refusing to start\n", .{ offense.section, offense.key });
+            },
+            .misplaced => {
+                log.err("config: [{s}] key \"{s}\" is a global key with no effect here; move it to [global]. Refusing to start", .{ offense.section, offense.key });
+                std.debug.print("config: [{s}] key \"{s}\" is a global key with no effect here; move it to [global]. Refusing to start\n", .{ offense.section, offense.key });
+            },
+        }
+        return error.InvalidConfiguration;
+    }
     const global = cfg.getSection("global") orelse return error.MissingGlobalSection;
 
     const authserv_id = global.get("AuthservID") orelse "localhost";
@@ -231,7 +260,7 @@ test "a listener section with no Socket is refused" {
         \\AuthservID = mail.test.com
         \\
         \\[listener:empty]
-        \\MaxConnections = 10
+        \\
     );
     defer cfg.deinit();
 
