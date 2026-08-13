@@ -15,6 +15,7 @@ SecureSPF implements RFC 7208 (Sender Policy Framework) as a milter that integra
 - **10-lookup limit** enforcement per RFC 7208 §4.6.4
 - **Multi-listener** support (TCP and Unix domain sockets)
 - **IP whitelist** — bypass SPF checks for trusted senders
+- **Trusted relays** — skip evaluation for your own relay infrastructure (stamps `none`, never `pass`)
 - **ZMQ event publishing** for analytics/reporting
 - **IPv4 and IPv6** support
 - **SIGHUP reload** without dropping connections
@@ -72,7 +73,8 @@ cat /var/run/securespf/securespf.pid
 | `DnsRetries` | `2` | DNS retry count |
 | `DnsCacheSize` | `1000` | Per-worker DNS cache max entries |
 | `DnsNegativeTTL` | `60` | Negative cache TTL in seconds |
-| `WhitelistFile` | *(none)* | IP whitelist file (one per line) |
+| `WhitelistFile` | *(none)* | IP whitelist file (one per line); stamps `pass` |
+| `TrustedRelaysFile` | *(none)* | Own-relay list (one per line); skips evaluation, stamps `none` |
 | `MaxHeaders` | `500` | Largest number of headers accumulated per message; 0 disables the limit |
 | `MaxHeaderBytes` | `1M` | Largest total header size per message; 0 disables the limit |
 | `MaxVoidLookups` | `2` | Largest number of terms per SPF record whose DNS lookup finds nothing (RFC 7208 §4.6.4); 0 disables the limit |

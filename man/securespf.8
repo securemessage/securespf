@@ -118,7 +118,18 @@ Default: 1000.
 TTL in seconds for negative DNS cache entries (NXDOMAIN, SERVFAIL).
 Default: 60.
 .It Cm WhitelistFile
-Path to a file containing IP addresses (one per line) that bypass SPF checks.
+Path to a file containing IP addresses (one per line) that bypass SPF checks,
+stamping
+.Li spf=pass .
+.It Cm TrustedRelaysFile
+Path to a file containing IP addresses or CIDR ranges (one per line) of the
+operator's own relay infrastructure. Mail arriving from a listed relay is not
+evaluated — the connecting address belongs to the relay, not the sender, so
+any verdict would describe the wrong host — and is stamped
+.Li spf=none
+with a "trusted relay; not evaluated" reason. Unlike
+.Cm WhitelistFile ,
+no affirmative claim is made, so DMARC alignment cannot inherit one.
 .It Cm MaxHeaders
 Largest number of headers accumulated for one message.
 Default: 500.

@@ -29,6 +29,7 @@ pub const SpfConfig = struct {
     dns_cache_size: u32,
     dns_negative_ttl: u32,
     whitelist_file: ?[]const u8,
+    trusted_relays_file: ?[]const u8,
     strip_auth_results: bool,
     zmq_endpoint: ?[]const u8,
     zmq_topic: []const u8,
@@ -81,8 +82,11 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
     const dns_cache_size = global.getInt("DnsCacheSize", u32, 1000);
     const dns_negative_ttl = global.getInt("DnsNegativeTTL", u32, 60);
 
-    // Whitelist
+    // Whitelist (assert pass for known-good senders) and trusted relays (our
+    // own infrastructure; evaluation is meaningless against a relay's address,
+    // so it is skipped rather than asserted). Different claims, different keys.
     const wl_file = global.get("WhitelistFile");
+    const tr_file = global.get("TrustedRelaysFile");
 
     // Trust boundary: when this is the first milter in the chain, no A-R header
     // claiming our authserv-id can be genuine on arrival (RFC 8601 §5).
@@ -116,6 +120,7 @@ pub fn parseSpfConfig(allocator: Allocator, cfg: *const config_mod.Config) !SpfC
         .dns_cache_size = dns_cache_size,
         .dns_negative_ttl = dns_negative_ttl,
         .whitelist_file = wl_file,
+        .trusted_relays_file = tr_file,
         .strip_auth_results = strip_auth_results,
         .zmq_endpoint = zmq_endpoint,
         .zmq_topic = zmq_topic,

@@ -41,10 +41,31 @@ var g_dns_config: dns_mod.ResolverConfig = .{};
 /// was audit X-2 (freed memory read by `contains()`).
 var g_whitelist: WhitelistRcu = undefined;
 const WhitelistRcu = rcu_mod.Rcu(whitelist.Whitelist);
+/// Trusted relays (skip evaluation, stamp none) behind the same RCU pattern.
+var g_trusted_relays: WhitelistRcu = undefined;
 
 fn freeWhitelist(allocator: Allocator, wl: *whitelist.Whitelist) void {
     wl.deinit();
     allocator.destroy(wl);
+}
+
+/// Load one address list (whitelist or trusted relays) into its RCU container.
+fn loadList(container: *WhitelistRcu, path: ?[]const u8, what: []const u8) void {
+    const list_path = path orelse return;
+    if (whitelist.Whitelist.loadFile(g_allocator, list_path)) |wl| {
+        if (boxWhitelist(g_allocator, wl)) |boxed| {
+            container.publish(&g_config_gen, boxed) catch |err| {
+                freeWhitelist(g_allocator, boxed);
+                log.warn("failed to publish {s} {s}: {}", .{ what, list_path, err });
+            };
+        } else |err| {
+            var owned = wl;
+            owned.deinit();
+            log.warn("failed to box {s} {s}: {}", .{ what, list_path, err });
+        }
+    } else |_| {
+        log.warn("failed to load {s}: {s}", .{ what, list_path });
+    }
 }
 
 /// Heap-allocate a parsed whitelist so it can be published. The container owns
@@ -57,6 +78,7 @@ fn boxWhitelist(allocator: Allocator, wl: whitelist.Whitelist) !*whitelist.White
 var g_zmq_endpoint: ?[]const u8 = null;
 var g_zmq_topic: []const u8 = "spf.result";
 var g_whitelist_file: ?[]const u8 = null;
+var g_trusted_relays_file: ?[]const u8 = null;
 var g_strip_policy: header_scrub.StripPolicy = .{ .own_methods = &.{"spf"} };
 var g_config_path: []const u8 = "/usr/local/etc/securespf/securespf.conf";
 var g_allocator: Allocator = undefined;
@@ -150,25 +172,13 @@ fn runDaemon() !void {
     g_zmq_topic = spf_cfg.zmq_topic;
     g_strip_policy = .{ .own_methods = &.{"spf"}, .strip_all = spf_cfg.strip_auth_results };
 
-    // Load whitelist if configured
+    // Load whitelist and trusted-relays lists if configured
     g_whitelist = WhitelistRcu.init(allocator, freeWhitelist);
+    g_trusted_relays = WhitelistRcu.init(allocator, freeWhitelist);
     g_whitelist_file = spf_cfg.whitelist_file;
-    if (spf_cfg.whitelist_file) |wl_path| {
-        if (whitelist.Whitelist.loadFile(allocator, wl_path)) |wl| {
-            if (boxWhitelist(allocator, wl)) |boxed| {
-                g_whitelist.publish(&g_config_gen, boxed) catch |err| {
-                    freeWhitelist(allocator, boxed);
-                    log.warn("failed to publish whitelist {s}: {}", .{ wl_path, err });
-                };
-            } else |err| {
-                var owned = wl;
-                owned.deinit();
-                log.warn("failed to load whitelist {s}: {}", .{ wl_path, err });
-            }
-        } else |_| {
-            log.warn("failed to load whitelist: {s}", .{wl_path});
-        }
-    }
+    g_trusted_relays_file = spf_cfg.trusted_relays_file;
+    loadList(&g_whitelist, g_whitelist_file, "whitelist");
+    loadList(&g_trusted_relays, g_trusted_relays_file, "trusted relays");
 
     // Daemonize, block signals, start the monitor thread, claim the PID file, raise
     // the fd budget, drop privileges — in that order, for reasons recorded once in
@@ -254,6 +264,7 @@ fn onEom(conn: *connection_mod.Connection) u8 {
         // Resolved here, inside the message callback, so the borrow lasts
         // exactly as long as the message does.
         .whitelist = g_whitelist.get(),
+        .trusted_relays = g_trusted_relays.get(),
         .resolver = getResolver,
         .publisher = getPublisher,
     });
@@ -270,44 +281,53 @@ fn onEom(conn: *connection_mod.Connection) u8 {
 /// iteration. The previous list is retired rather than freed, and reclaimed
 /// once every worker has been seen at a quiescent point past the swap.
 fn reloadConfig() void {
-    const wl_path = g_whitelist_file orelse {
+    var reloaded = false;
+    reloadList(&g_whitelist, g_whitelist_file, "whitelist", &reloaded);
+    reloadList(&g_trusted_relays, g_trusted_relays_file, "trusted relays", &reloaded);
+
+    if (!reloaded) {
         _ = g_config_gen.increment();
         log.info("config generation advanced to {d}", .{g_config_gen.load()});
         return;
-    };
-
-    var new_wl = whitelist.Whitelist.loadFile(g_allocator, wl_path) catch {
-        log.warn("reload: failed to re-read whitelist {s}, keeping previous", .{wl_path});
-        _ = g_config_gen.increment();
-        return;
-    };
-
-    const boxed = boxWhitelist(g_allocator, new_wl) catch {
-        new_wl.deinit();
-        log.warn("reload: out of memory boxing whitelist, keeping previous", .{});
-        _ = g_config_gen.increment();
-        return;
-    };
-
-    g_whitelist.publish(&g_config_gen, boxed) catch {
-        // publish reserves before it swaps, so on failure nothing changed and
-        // the previous list is still installed.
-        freeWhitelist(g_allocator, boxed);
-        log.warn("reload: out of memory publishing whitelist, keeping previous", .{});
-        _ = g_config_gen.increment();
-        return;
-    };
+    }
 
     // Pull the workers out of kevent() so they reach a quiescent point and the
     // superseded list becomes reclaimable. Without this an idle worker pins
     // the safe generation and the retire list grows for as long as reloads
     // keep arriving.
     g_config_gen.wake();
+}
 
-    log.info("whitelist reloaded from {s} (generation {d}, {d} awaiting reclamation)", .{
-        wl_path,
+/// Re-read one address list into its RCU container, keeping the previous
+/// contents on any failure. Sets `reloaded` when anything was published.
+fn reloadList(container: *WhitelistRcu, path: ?[]const u8, what: []const u8, reloaded: *bool) void {
+    const list_path = path orelse return;
+
+    var new_wl = whitelist.Whitelist.loadFile(g_allocator, list_path) catch {
+        log.warn("reload: failed to re-read {s} {s}, keeping previous", .{ what, list_path });
+        return;
+    };
+
+    const boxed = boxWhitelist(g_allocator, new_wl) catch {
+        new_wl.deinit();
+        log.warn("reload: out of memory boxing {s}, keeping previous", .{what});
+        return;
+    };
+
+    container.publish(&g_config_gen, boxed) catch {
+        // publish reserves before it swaps, so on failure nothing changed and
+        // the previous list is still installed.
+        freeWhitelist(g_allocator, boxed);
+        log.warn("reload: out of memory publishing {s}, keeping previous", .{what});
+        return;
+    };
+
+    reloaded.* = true;
+    log.info("{s} reloaded from {s} (generation {d}, {d} awaiting reclamation)", .{
+        what,
+        list_path,
         g_config_gen.load(),
-        g_whitelist.retiredCount(),
+        container.retiredCount(),
     });
 }
 

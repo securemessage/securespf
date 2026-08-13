@@ -40,6 +40,10 @@ pub const MsgCtx = struct {
     /// quiescence at the top of the event loop, so nothing can free the list
     /// while this runs (see securemilter rcu.zig).
     whitelist: ?*const whitelist_mod.Whitelist,
+    /// Same lifetime rule as `whitelist`. A listed address is our own relay
+    /// infrastructure: the address says nothing about the sender's authority,
+    /// so evaluation is skipped and stamped `none`, never `pass`.
+    trusted_relays: ?*const whitelist_mod.Whitelist,
 
     /// Lazy per-thread resolver and publisher accessors.
     resolver: *const fn () *dns_mod.Resolver,
@@ -109,6 +113,30 @@ pub fn doEval(conn: *connection_mod.Connection, ctx: MsgCtx) u8 {
         return @intFromEnum(responses.Code.accept);
     }
     const client_addr = client_addr_opt.?;
+
+    // Trusted relays first: our own infrastructure handing us mail. SPF is a
+    // function of the connecting address, and against a relay's address the
+    // answer is about the relay, not the sender — so it is not evaluated, and
+    // the stamp is an honest `none`, not a `pass`. Asserting pass here would
+    // tell securedmarc the relay is authorized for arbitrary sender domains,
+    // which turns one forged message through our own edge into an aligned
+    // DMARC pass.
+    const trusted_relay = if (ctx.trusted_relays) |tr| tr.contains(client_addr) else false;
+    if (trusted_relay) {
+        const elapsed_ms = @divFloor(std.time.nanoTimestamp() - start_ns, 1_000_000);
+        const peer = conn.getPeerDisplay();
+        log.info("id={f} peer={f}[{f}] client={f} from={f} result=none reason=trusted-relay elapsed={d}ms", .{
+            escape.logField(queue_id),
+            escape.logField(peer.name),
+            escape.logField(peer.ip),
+            escape.logField(client_addr),
+            escape.logField(mail_from),
+            elapsed_ms,
+        });
+        addArHeader(conn, ctx.authserv_id, "none", "trusted relay; not evaluated", extractDomain(mail_from), helo, client_addr) catch |err|
+            return auth_stamp.deferCode(err, "spf");
+        return @intFromEnum(responses.Code.accept);
+    }
 
     // Check whitelist — skip SPF for trusted hosts.
     const whitelisted = if (ctx.whitelist) |wl| wl.contains(client_addr) else false;

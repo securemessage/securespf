@@ -138,3 +138,11 @@ Socket          = inet:8890@127.0.0.1
 
 # Optional: hosts/networks that bypass SPF checking.
 # WhitelistFile = /usr/local/etc/securespf/whitelist
+#
+# Optional: your own relay infrastructure. Unlike the whitelist, a listed
+# relay is NOT stamped pass — SPF is a function of the connecting address,
+# and against a relay's address the answer describes the relay, not the
+# sender, so evaluation is skipped and the result is an honest "none".
+# Asserting pass for a relay would tell a DMARC verifier downstream that the
+# relay is authorized for arbitrary sender domains.
+# TrustedRelaysFile = /usr/local/etc/securespf/trusted-relays
