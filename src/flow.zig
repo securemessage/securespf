@@ -273,14 +273,14 @@ fn addArHeader(
     properties[prop_count] = .{ .ptype = "smtp", .property = "helo", .value = helo };
     prop_count += 1;
 
-    try auth_stamp.stamp(conn.allocator, conn.fd, authserv_id, &.{
+    try auth_stamp.stamp(conn, authserv_id, &.{
         .{
             .method = "spf",
             .result = result_str,
             .reason = reason,
             .properties = properties[0..prop_count],
         },
-    }, conn.negotiated_protocol.header_leading_space);
+    });
 }
 
 fn publishEvent(
@@ -368,6 +368,8 @@ test "the A-R stamp records smtp.client-ip, quoted for IPv6, omitted when absent
 
         var conn = connection_mod.Connection.init(std.testing.allocator, fds[1], 0, .{});
         try addArHeader(&conn, "mail.test", "fail", null, "example.com", "relay.test", c.ip);
+        // Queued, not written: the worker flushes replies, so the test has to.
+        _ = try conn.flushOut();
         conn.deinit(); // closes fds[1]
 
         var buf: [512]u8 = undefined;
