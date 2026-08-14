@@ -14,8 +14,8 @@ SecureSPF implements RFC 7208 (Sender Policy Framework) as a milter that integra
 - **SPF macro expansion** (`%{s}`, `%{l}`, `%{d}`, `%{i}`, etc.)
 - **10-lookup limit** enforcement per RFC 7208 §4.6.4
 - **Multi-listener** support (TCP and Unix domain sockets)
-- **IP whitelist** — bypass SPF checks for trusted senders
-- **Trusted relays** — skip evaluation for your own relay infrastructure (stamps `none`, never `pass`)
+- **IP whitelist** -- bypass SPF checks for trusted senders
+- **Trusted relays** -- skip evaluation for your own relay infrastructure (stamps `none`, never `pass`)
 - **ZMQ event publishing** for analytics/reporting
 - **IPv4 and IPv6** support
 - **SIGHUP reload** without dropping connections
@@ -86,7 +86,7 @@ cat /var/run/securespf/securespf.pid
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Socket` | — | `inet:port@ip` or `unix:/path`. The IP must be numeric (no DNS). An unparseable value is a fatal startup error, never ignored. |
+| `Socket` | -- | `inet:port@ip` or `unix:/path`. The IP must be numeric (no DNS). An unparseable value is a fatal startup error, never ignored. |
 
 ## Postfix Integration
 
@@ -136,16 +136,16 @@ securespf-check -i 2001:db8::1 -s user@example.org -n 8.8.8.8
 
 ## Signals
 
-- **SIGHUP** — Reload configuration (active connections unaffected)
-- **SIGTERM** — Graceful shutdown (30s drain timeout)
+- **SIGHUP** -- Reload configuration (active connections unaffected)
+- **SIGTERM** -- Graceful shutdown (30s drain timeout)
 
 ## Part of the SecureMilter Suite
 
-- [securemilter-lib](https://pacyworld.dev/securemessage/securemilter-lib) — Shared infrastructure library
-- **SecureSPF** — SPF verification (this project)
-- [SecureDKIM](https://pacyworld.dev/securemessage/securedkim) — DKIM signing and verification
-- [SecureDMARC](https://pacyworld.dev/securemessage/securedmarc) — DMARC policy evaluation
-- [SecureARC](https://pacyworld.dev/securemessage/securearc) — ARC chain validation and sealing
+- [securemilter-lib](https://pacyworld.dev/securemessage/securemilter-lib) -- Shared infrastructure library
+- **SecureSPF** -- SPF verification (this project)
+- [SecureDKIM](https://pacyworld.dev/securemessage/securedkim) -- DKIM signing and verification
+- [SecureDMARC](https://pacyworld.dev/securemessage/securedmarc) -- DMARC policy evaluation
+- [SecureARC](https://pacyworld.dev/securemessage/securearc) -- ARC chain validation and sealing
 
 ## Requirements
 
@@ -155,4 +155,4 @@ securespf-check -i 2001:db8::1 -s user@example.org -n 8.8.8.8
 
 ## License
 
-BSD-2-Clause — Copyright (c) 2026, Daniel Morante
+BSD-2-Clause -- Copyright (c) 2026, Daniel Morante
